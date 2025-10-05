@@ -347,6 +347,38 @@ function DayInfo({ t }: { t: any }) {
   );
 }
 
+function GlobalStyles() {
+  return (
+    <style>{`
+      /* Neat, consistent columns for action rows on md+ screens */
+      .cc-rule-row {
+        display: grid;
+        gap: 0.75rem;                 /* ~12px */
+        align-items: start;
+      }
+      @media (min-width: 768px) {
+        /* 5 columns: Day | Time | Title | Notes | Controls */
+        .cc-rule-row {
+          grid-template-columns:
+            7rem      /* Day */
+            8rem      /* Time */
+            minmax(14rem, 1fr)      /* Title */
+            minmax(18rem, 1.2fr)    /* Notes */
+            4.5rem;   /* Controls */
+        }
+      }
+      /* Prevent long text from blowing up column widths */
+      .cc-rule-row > * { min-width: 0; }
+
+      /* Tidy control column so buttons/checkbox align with inputs */
+      @media (min-width: 768px) {
+        .cc-rule-row .cc-controls { padding-top: 26px; }
+      }
+    `}</style>
+  );
+}
+
+
 /** DayInput: number field that *skips 0* but allows editing to "", "-" and then "-1" **/
 function DayInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
   const [text, setText] = useState<string>(String(value));
@@ -488,6 +520,8 @@ function Header({ onReset }: { onReset: () => void }) {
   );
 }
 
+<GlobalStyles />
+
 /*** Setup Wizard ***/
 function SetupWizard({ onComplete }: { onComplete: (settings: any) => void }) {
   const { t } = useLocale();
@@ -523,7 +557,7 @@ function SetupWizard({ onComplete }: { onComplete: (settings: any) => void }) {
 
         <div className="space-y-2 mb-4">
           {medRules.map(rule => (
-            <div key={rule.id} className="grid md:grid-cols-12 items-start gap-2 p-3 rounded-xl border bg-white">
+              <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
               <div className="md:col-span-2">
                 <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
                 <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
@@ -531,7 +565,7 @@ function SetupWizard({ onComplete }: { onComplete: (settings: any) => void }) {
               <div className="md:col-span-2"><Label className="text-xs">{t.timeOfDay}</Label><Input type="time" value={rule.time || ""} onChange={e => updateRule(rule.id, { time: e.target.value })} /></div>
               <div className="md:col-span-3"><Label className="text-xs">{t.title}</Label><Input value={rule.title} onChange={e => updateRule(rule.id, { title: e.target.value })} /></div>
               <div className="md:col-span-4"><Label className="text-xs">{t.notesOpt}</Label><Textarea rows={2} value={rule.notes} onChange={e => updateRule(rule.id, { notes: e.target.value })} /></div>
-              <div className="md:col-span-1 flex items-center gap-2 pt-5">
+              <div className="cc-controls flex items-center gap-2">
                 <Checkbox checked={rule.enabled} onCheckedChange={v => updateRule(rule.id, { enabled: !!v })} />
                 <Button size="icon" variant="ghost" onClick={() => duplicateRule(rule)} title={t.duplicateAction}><Copy className="w-4 h-4"/></Button>
                 <Button size="icon" variant="ghost" onClick={() => deleteRule(rule.id)}><Trash2 className="w-4 h-4"/></Button>
@@ -715,7 +749,7 @@ function PlanEditor({ settings, onSaved }: { settings: any; onSaved: () => void 
 
       <div className="space-y-2">
         {vals.medRules.map((rule: any) => (
-          <div key={rule.id} className="grid md:grid-cols-12 items-start gap-2 p-3 rounded-xl border bg-white">
+          <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
             <div className="md:col-span-2">
               <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
               <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
@@ -723,7 +757,7 @@ function PlanEditor({ settings, onSaved }: { settings: any; onSaved: () => void 
             <div className="md:col-span-2"><Label className="text-xs">{t.timeOfDay}</Label><Input type="time" value={rule.time || ""} onChange={e => updateRule(rule.id, { time: e.target.value })} /></div>
             <div className="md:col-span-3"><Label className="text-xs">{t.title}</Label><Input value={rule.title} onChange={e => updateRule(rule.id, { title: e.target.value })} /></div>
             <div className="md:col-span-4"><Label className="text-xs">{t.notes}</Label><Textarea rows={2} value={rule.notes || ""} onChange={e => updateRule(rule.id, { notes: e.target.value })} /></div>
-            <div className="md:col-span-1 flex items-center gap-2 pt-5">
+            <div className="cc-controls flex items-center gap-2">
               <Checkbox checked={rule.enabled} onCheckedChange={v => updateRule(rule.id, { enabled: !!v })} />
               <Button size="icon" variant="ghost" onClick={() => duplicateRule(rule)} title={STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].duplicateAction}><Copy className="w-4 h-4"/></Button>
               <Button size="icon" variant="ghost" onClick={() => deleteRule(rule.id)}><Trash2 className="w-4 h-4"/></Button>
