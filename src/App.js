@@ -1,4 +1,4 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import confetti from "canvas-confetti";
 import { createRoot } from "react-dom/client";
 /**
  * ChemoCare – Offline-first web app for chemotherapy scheduling
@@ -56,7 +57,7 @@ function useIsMobile(bp = 768) {
 }
 /******************** IndexedDB ********************/
 const DB_NAME = "chemo-care-db";
-const DB_VERSION = 7; // strict Day 1 enforcement + DayInput
+const DB_VERSION = 8; // add-action button restore + confetti + DayInput improvements
 let dbPromise;
 async function getDB() {
     if (!dbPromise) {
@@ -363,37 +364,72 @@ function downloadICS(content, filename = "chemocare.ics") {
 function DayInfo({ t }) {
     return (_jsxs(Popover, { children: [_jsx(PopoverTrigger, { asChild: true, children: _jsx("button", { "aria-label": t.dayHelpBtn, className: "inline-flex items-center justify-center align-middle w-5 h-5 rounded-full border text-[10px] leading-none ml-1 hover:bg-gray-100", title: t.dayHelpTitle, children: "?" }) }), _jsx(PopoverContent, { className: "w-64 text-sm", children: _jsx("div", { dangerouslySetInnerHTML: { __html: t.dayExpl } }) })] }));
 }
-/** DayInput: number field that *skips 0* on every interaction */
+/** DayInput: number field that *skips 0* but allows editing to "", "-" and then "-1" **/
 function DayInput({ value, onChange }) {
-    // helper to set while enforcing "no 0"
-    const set = (raw) => onChange(normalizeDayInput(raw));
-    return (_jsx(Input, { type: "number", step: 1, value: value, onChange: (e) => set(e.target.value), onBlur: (e) => set(e.target.value), onWheel: (e) => {
+    const [text, setText] = useState(String(value));
+    // sync external changes unless user is mid-entry "" or "-"
+    useEffect(() => {
+        const vstr = String(value);
+        if (text !== vstr && text !== "" && text !== "-")
+            setText(vstr);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [value]);
+    const handleChange = (e) => {
+        let v = e.target.value;
+        if (v === "0" || v === "-0")
+            v = "1"; // never let raw 0 exist
+        setText(v);
+        const n = Number(v);
+        if (!Number.isNaN(n) && n !== 0)
+            onChange(n);
+    };
+    const commit = () => {
+        const n = Number(text);
+        const normalized = (!Number.isNaN(n) ? (n === 0 ? 1 : n) : 1);
+        setText(String(normalized));
+        onChange(normalized);
+    };
+    return (_jsx(Input, { type: "text", inputMode: "numeric", pattern: "-?[0-9]*", value: text, onChange: handleChange, onBlur: commit, onWheel: (e) => {
             if (document.activeElement === e.currentTarget) {
                 e.preventDefault();
-                const cur = Number.isFinite(value) ? value : 1;
+                const cur = Number.isNaN(Number(text)) ? value : Number(text) || 1;
                 let next = e.deltaY < 0 ? cur + 1 : cur - 1;
                 if (next === 0)
                     next += e.deltaY < 0 ? 1 : -1;
+                setText(String(next));
                 onChange(next);
             }
         }, onKeyDown: (e) => {
             if (e.key === "ArrowUp" || e.key === "ArrowDown") {
                 e.preventDefault();
-                const cur = Number.isFinite(value) ? value : 1;
+                const cur = Number.isNaN(Number(text)) ? value : Number(text) || 1;
                 let next = e.key === "ArrowUp" ? cur + 1 : cur - 1;
                 if (next === 0)
                     next += e.key === "ArrowUp" ? 1 : -1;
+                setText(String(next));
                 onChange(next);
             }
-        }, 
-        // prevent entering a bare "0" as the first character via typing
-        onInput: (e) => {
-            const el = e.currentTarget;
-            if (el.value === "0" || el.value === "-0") {
-                el.value = "1";
-                set(el.value);
+            if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
             }
         } }));
+}
+function fireConfettiAtClient(clientX, clientY) {
+    try {
+        const x = clientX != null ? clientX / window.innerWidth : 0.5;
+        const y = clientY != null ? clientY / window.innerHeight : 0.35;
+        confetti({
+            particleCount: 90,
+            spread: 65,
+            startVelocity: 40,
+            gravity: 0.9,
+            scalar: 1,
+            ticks: 160,
+            origin: { x, y },
+        });
+    }
+    catch { }
 }
 /*** Header (desktop: buttons, mobile: collapsed menu) ***/
 function Header({ onReset }) {
@@ -416,7 +452,7 @@ function SetupWizard({ onComplete }) {
     const deleteRule = (id) => setMedRules(r => r.filter(x => x.id !== id));
     const duplicateRule = (rule) => setMedRules(r => [...r, { ...rule, id: crypto.randomUUID() }]);
     const canSave = startDate && frequencyDays >= 1;
-    return (_jsx(Card, { className: "max-w-3xl mx-auto", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: t.setupTitle }), _jsx("p", { className: "text-sm opacity-80 mb-4", dangerouslySetInnerHTML: { __html: t.setupHelp } }), _jsxs("div", { className: "grid md:grid-cols-3 gap-4 mb-6", children: [_jsxs("div", { children: [_jsx(Label, { children: t.firstDate }), _jsx(Input, { type: "date", value: startDate, onChange: e => setStartDate(e.target.value) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.frequency }), _jsx(Input, { type: "number", step: 1, min: 1, value: frequencyDays, onChange: e => setFrequencyDays(parseInt(e.target.value || "0", 10)) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.cycles }), _jsx(Input, { type: "number", step: 1, min: 1, value: cycles, onChange: e => setCycles(e.target.value === "" ? "" : parseInt(e.target.value, 10)) })] })] }), _jsx("h3", { className: "font-medium mb-2", children: t.medActions }), _jsx("p", { className: "text-xs opacity-70 mb-2", children: t.sameDayHint }), _jsx("div", { className: "space-y-2 mb-4", children: medRules.map(rule => (_jsxs("div", { className: "grid md:grid-cols-12 items-start gap-2 p-3 rounded-xl border bg-white", children: [_jsxs("div", { className: "md:col-span-2", children: [_jsxs("div", { className: "flex items-center gap-1", children: [_jsx(Label, { className: "text-xs", children: t.dayField }), _jsx(DayInfo, { t: t })] }), _jsx(DayInput, { value: rule.day, onChange: (n) => updateRule(rule.id, { day: n }) })] }), _jsxs("div", { className: "md:col-span-2", children: [_jsx(Label, { className: "text-xs", children: t.timeOfDay }), _jsx(Input, { type: "time", value: rule.time || "", onChange: e => updateRule(rule.id, { time: e.target.value }) })] }), _jsxs("div", { className: "md:col-span-3", children: [_jsx(Label, { className: "text-xs", children: t.title }), _jsx(Input, { value: rule.title, onChange: e => updateRule(rule.id, { title: e.target.value }) })] }), _jsxs("div", { className: "md:col-span-4", children: [_jsx(Label, { className: "text-xs", children: t.notesOpt }), _jsx(Textarea, { rows: 2, value: rule.notes, onChange: e => updateRule(rule.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "md:col-span-1 flex items-center gap-2 pt-5", children: [_jsx(Checkbox, { checked: rule.enabled, onCheckedChange: v => updateRule(rule.id, { enabled: !!v }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => duplicateRule(rule), title: t.duplicateAction, children: _jsx(Copy, { className: "w-4 h-4" }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteRule(rule.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, rule.id))) }), _jsx("div", { className: "flex justify-end", children: _jsx(Button, { disabled: !canSave, onClick: async () => {
+    return (_jsx(Card, { className: "max-w-3xl mx-auto", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: t.setupTitle }), _jsx("p", { className: "text-sm opacity-80 mb-4", dangerouslySetInnerHTML: { __html: t.setupHelp } }), _jsxs("div", { className: "grid md:grid-cols-3 gap-4 mb-6", children: [_jsxs("div", { children: [_jsx(Label, { children: t.firstDate }), _jsx(Input, { type: "date", value: startDate, onChange: e => setStartDate(e.target.value) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.frequency }), _jsx(Input, { type: "number", step: 1, min: 1, value: frequencyDays, onChange: e => setFrequencyDays(parseInt(e.target.value || "0", 10)) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.cycles }), _jsx(Input, { type: "number", step: 1, min: 1, value: cycles, onChange: e => setCycles(e.target.value === "" ? "" : parseInt(e.target.value, 10)) })] })] }), _jsx("h3", { className: "font-medium mb-2", children: t.medActions }), _jsx("p", { className: "text-xs opacity-70 mb-2", children: t.sameDayHint }), _jsx("div", { className: "space-y-2 mb-4", children: medRules.map(rule => (_jsxs("div", { className: "grid md:grid-cols-12 items-start gap-2 p-3 rounded-xl border bg-white", children: [_jsxs("div", { className: "md:col-span-2", children: [_jsxs("div", { className: "flex items-center gap-1", children: [_jsx(Label, { className: "text-xs", children: t.dayField }), _jsx(DayInfo, { t: t })] }), _jsx(DayInput, { value: rule.day, onChange: (n) => updateRule(rule.id, { day: n }) })] }), _jsxs("div", { className: "md:col-span-2", children: [_jsx(Label, { className: "text-xs", children: t.timeOfDay }), _jsx(Input, { type: "time", value: rule.time || "", onChange: e => updateRule(rule.id, { time: e.target.value }) })] }), _jsxs("div", { className: "md:col-span-3", children: [_jsx(Label, { className: "text-xs", children: t.title }), _jsx(Input, { value: rule.title, onChange: e => updateRule(rule.id, { title: e.target.value }) })] }), _jsxs("div", { className: "md:col-span-4", children: [_jsx(Label, { className: "text-xs", children: t.notesOpt }), _jsx(Textarea, { rows: 2, value: rule.notes, onChange: e => updateRule(rule.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "md:col-span-1 flex items-center gap-2 pt-5", children: [_jsx(Checkbox, { checked: rule.enabled, onCheckedChange: v => updateRule(rule.id, { enabled: !!v }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => duplicateRule(rule), title: t.duplicateAction, children: _jsx(Copy, { className: "w-4 h-4" }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteRule(rule.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, rule.id))) }), _jsxs("div", { className: "flex justify-between mb-2", children: [_jsxs(Button, { variant: "outline", onClick: addRule, children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), t.addAction] }), _jsx("div", {})] }), _jsx("div", { className: "flex justify-end", children: _jsx(Button, { disabled: !canSave, onClick: async () => {
                             const settings = {
                                 startDate,
                                 frequencyDays,
@@ -437,10 +473,18 @@ function Home({ settings, moves, refresh }) {
     const nextTreatmentEv = events.find(ev => ev.type === "treatment" && diffDays(today, ev.date) >= 0);
     const [done, setDone] = useState({});
     useEffect(() => { (async () => setDone(await loadDone()))(); }, [settings, moves]);
-    const toggleDone = async (id, val) => { const d = { ...done, [id]: val }; await saveDone(d); setDone(d); };
+    const toggleDone = async (id, val) => {
+        const d = { ...done, [id]: val };
+        await saveDone(d);
+        setDone(d);
+    };
     const upcoming = events.filter(ev => diffDays(today, ev.date) >= 0).slice(0, 12);
     return (_jsxs("div", { className: "grid lg:grid-cols-3 gap-4", children: [_jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextAction }), nextActionEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextActionEv.date, today) ? "bg-yellow-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm opacity-70", children: isSameDay(nextActionEv.date, today) ? t.dueToday :
-                                        `${Math.abs(daysUntil(nextActionEv.date))} ${t.daysWord} ${daysUntil(nextActionEv.date) < 0 ? t.overdue : t.toGo}` }), _jsx("div", { className: "text-lg font-medium", children: nextActionEv.title }), nextActionEv.rule?.notes ? (_jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: nextActionEv.rule.notes })) : null, _jsxs("div", { className: "text-sm opacity-80", children: [formatHuman(nextActionEv.date), nextActionEv.rule?.time ? ` · ${formatTime(nextActionEv.date)}` : ""] })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextTreatment }), nextTreatmentEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextTreatmentEv.date, today) ? "bg-green-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm opacity-70", children: isSameDay(nextTreatmentEv.date, today) ? t.today : `${daysUntil(nextTreatmentEv.date)} ${t.daysWord}` }), _jsx("div", { className: "text-lg font-medium", children: `${t.treatment} #${nextTreatmentEv.index + 1}` }), _jsx("div", { className: "text-sm opacity-80", children: formatHuman(nextTreatmentEv.date) })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.quickActions }), _jsxs("div", { className: "flex flex-wrap gap-2", children: [_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsxs(Button, { variant: "outline", children: [_jsx(Edit, { className: "w-4 h-4 mr-2" }), t.editPlan] }) }), _jsxs(DialogContent, { className: "max-w-3xl", children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.editPlan }) }), _jsx(PlanEditor, { settings: settings, onSaved: refresh })] })] }), _jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsxs(Button, { variant: "outline", children: [_jsx(MoveRight, { className: "w-4 h-4 mr-2" }), t.moveTreatment] }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.moveATreatment }) }), _jsx(MoveTreatment, { settings: settings, moves: moves, onChanged: refresh })] })] })] })] }) }), _jsx(Card, { className: "lg:col-span-3", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.upcoming }), _jsx("div", { className: "divide-y", children: upcoming.map(ev => (_jsxs("div", { className: `py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`, children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsx("span", { className: `text-xs px-2 py-1 rounded-full border ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"}`, children: ev.type === "treatment" ? t.treatment : t.action }), _jsxs("div", { children: [_jsx("div", { className: `font-medium ${ev.type === 'action' && done[ev.id] ? 'line-through opacity-60' : ''}`, children: ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title }), _jsxs("div", { className: "text-xs opacity-70", children: [formatHuman(ev.date), ev.type === "action" && ev.rule?.time ? ` · ${formatTime(ev.date)}` : "", isSameDay(ev.date, today) ? ` · ${t.today}` : ""] }), ev.type === 'action' && ev.rule?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.rule.notes }) : null] })] }), _jsxs("div", { className: "flex items-center gap-2", children: [ev.type === 'action' && (_jsx(Checkbox, { checked: !!done[ev.id], onCheckedChange: (v) => toggleDone(ev.id, !!v) })), ev.type === "treatment" && (_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsx(Button, { size: "sm", variant: "outline", children: t.moveEllipsis }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: `${t.moveEllipsis.replace("…", "")} ${t.treatment} #${ev.index + 1}` }) }), _jsx(MoveTreatment, { preselectIndex: ev.index, settings: settings, moves: moves, onChanged: refresh })] })] }))] })] }, ev.id))) })] }) })] }));
+                                        `${Math.abs(daysUntil(nextActionEv.date))} ${t.daysWord} ${daysUntil(nextActionEv.date) < 0 ? t.overdue : t.toGo}` }), _jsx("div", { className: "text-lg font-medium", children: nextActionEv.title }), nextActionEv.rule?.notes ? (_jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: nextActionEv.rule.notes })) : null, _jsxs("div", { className: "text-sm opacity-80", children: [formatHuman(nextActionEv.date), nextActionEv.rule?.time ? ` · ${formatTime(nextActionEv.date)}` : ""] })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextTreatment }), nextTreatmentEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextTreatmentEv.date, today) ? "bg-green-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm opacity-70", children: isSameDay(nextTreatmentEv.date, today) ? t.today : `${daysUntil(nextTreatmentEv.date)} ${t.daysWord}` }), _jsx("div", { className: "text-lg font-medium", children: `${t.treatment} #${nextTreatmentEv.index + 1}` }), _jsx("div", { className: "text-sm opacity-80", children: formatHuman(nextTreatmentEv.date) })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.quickActions }), _jsxs("div", { className: "flex flex-wrap gap-2", children: [_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsxs(Button, { variant: "outline", children: [_jsx(Edit, { className: "w-4 h-4 mr-2" }), t.editPlan] }) }), _jsxs(DialogContent, { className: "max-w-3xl", children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.editPlan }) }), _jsx(PlanEditor, { settings: settings, onSaved: refresh })] })] }), _jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsxs(Button, { variant: "outline", children: [_jsx(MoveRight, { className: "w-4 h-4 mr-2" }), t.moveTreatment] }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.moveATreatment }) }), _jsx(MoveTreatment, { settings: settings, moves: moves, onChanged: refresh })] })] })] })] }) }), _jsx(Card, { className: "lg:col-span-3", children: _jsxs(CardContent, { className: "p-6", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.upcoming }), _jsx("div", { className: "divide-y", children: upcoming.map(ev => (_jsxs("div", { className: `py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`, children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsx("span", { className: `text-xs px-2 py-1 rounded-full border ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"}`, children: ev.type === "treatment" ? t.treatment : t.action }), _jsxs("div", { children: [_jsx("div", { className: `font-medium ${ev.type === 'action' && done[ev.id] ? 'line-through opacity-60' : ''}`, children: ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title }), _jsxs("div", { className: "text-xs opacity-70", children: [formatHuman(ev.date), ev.type === "action" && ev.rule?.time ? ` · ${formatTime(ev.date)}` : "", isSameDay(ev.date, today) ? ` · ${t.today}` : ""] }), ev.type === 'action' && ev.rule?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.rule.notes }) : null] })] }), _jsxs("div", { className: "flex items-center gap-2", children: [ev.type === 'action' && (_jsx(_Fragment, { children: _jsx(Checkbox, { checked: !!done[ev.id], onClick: (e) => {
+                                                        if (!done[ev.id]) {
+                                                            fireConfettiAtClient(e.clientX, e.clientY);
+                                                        }
+                                                    }, onCheckedChange: (v) => toggleDone(ev.id, !!v) }) })), ev.type === "treatment" && (_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsx(Button, { size: "sm", variant: "outline", children: t.moveEllipsis }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: `${t.moveEllipsis.replace("…", "")} ${t.treatment} #${ev.index + 1}` }) }), _jsx(MoveTreatment, { preselectIndex: ev.index, settings: settings, moves: moves, onChanged: refresh })] })] }))] })] }, ev.id))) })] }) })] }));
 }
 /*** Plan Editor ***/
 function PlanEditor({ settings, onSaved }) {

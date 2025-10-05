@@ -13,6 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import confetti from "canvas-confetti";
 import { createRoot } from "react-dom/client";
 
 /**
@@ -57,7 +58,7 @@ function useIsMobile(bp = 768) {
 
 /******************** IndexedDB ********************/
 const DB_NAME = "chemo-care-db";
-const DB_VERSION = 7; // strict Day 1 enforcement + DayInput
+const DB_VERSION = 8; // add-action button restore + confetti + DayInput improvements
 let dbPromise: Promise<any> | undefined;
 async function getDB() {
   if (!dbPromise) {
@@ -346,46 +347,81 @@ function DayInfo({ t }: { t: any }) {
   );
 }
 
-/** DayInput: number field that *skips 0* on every interaction */
+/** DayInput: number field that *skips 0* but allows editing to "", "-" and then "-1" **/
 function DayInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
-  // helper to set while enforcing "no 0"
-  const set = (raw: any) => onChange(normalizeDayInput(raw));
+  const [text, setText] = useState<string>(String(value));
+  // sync external changes unless user is mid-entry "" or "-"
+  useEffect(() => {
+    const vstr = String(value);
+    if (text !== vstr && text !== "" && text !== "-") setText(vstr);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    let v = e.target.value;
+    if (v === "0" || v === "-0") v = "1"; // never let raw 0 exist
+    setText(v);
+    const n = Number(v);
+    if (!Number.isNaN(n) && n !== 0) onChange(n);
+  };
+
+  const commit = () => {
+    const n = Number(text);
+    const normalized = (!Number.isNaN(n) ? (n === 0 ? 1 : n) : 1);
+    setText(String(normalized));
+    onChange(normalized);
+  };
+
   return (
     <Input
-      type="number"
-      step={1}
-      value={value}
-      onChange={(e) => set(e.target.value)}
-      onBlur={(e) => set(e.target.value)}
+      type="text"
+      inputMode="numeric"
+      pattern="-?[0-9]*"
+      value={text}
+      onChange={handleChange}
+      onBlur={commit}
       onWheel={(e) => {
         if (document.activeElement === e.currentTarget) {
           e.preventDefault();
-          const cur = Number.isFinite(value) ? value : 1;
+          const cur = Number.isNaN(Number(text)) ? value : Number(text) || 1;
           let next = (e as any).deltaY < 0 ? cur + 1 : cur - 1;
           if (next === 0) next += (e as any).deltaY < 0 ? 1 : -1;
+          setText(String(next));
           onChange(next);
         }
       }}
       onKeyDown={(e) => {
         if (e.key === "ArrowUp" || e.key === "ArrowDown") {
           e.preventDefault();
-          const cur = Number.isFinite(value) ? value : 1;
+          const cur = Number.isNaN(Number(text)) ? value : Number(text) || 1;
           let next = e.key === "ArrowUp" ? cur + 1 : cur - 1;
           if (next === 0) next += e.key === "ArrowUp" ? 1 : -1;
+          setText(String(next));
           onChange(next);
         }
-      }}
-      // prevent entering a bare "0" as the first character via typing
-      onInput={(e) => {
-        const el = e.currentTarget as HTMLInputElement;
-        if (el.value === "0" || el.value === "-0") {
-          el.value = "1";
-          set(el.value);
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
         }
       }}
-      // allow negatives; no min attribute so -1 works; 0 is always corrected
     />
   );
+}
+
+function fireConfettiAtClient(clientX?: number, clientY?: number) {
+  try {
+    const x = clientX != null ? clientX / window.innerWidth : 0.5;
+    const y = clientY != null ? clientY / window.innerHeight : 0.35;
+    confetti({
+      particleCount: 90,
+      spread: 65,
+      startVelocity: 40,
+      gravity: 0.9,
+      scalar: 1,
+      ticks: 160,
+      origin: { x, y },
+    });
+  } catch {}
 }
 
 /*** Header (desktop: buttons, mobile: collapsed menu) ***/
@@ -504,6 +540,12 @@ function SetupWizard({ onComplete }: { onComplete: (settings: any) => void }) {
           ))}
         </div>
 
+        {/* >>> RESTORED Add Action button on setup <<< */}
+        <div className="flex justify-between mb-2">
+          <Button variant="outline" onClick={addRule}><Plus className="w-4 h-4 mr-2"/>{t.addAction}</Button>
+          <div />
+        </div>
+
         <div className="flex justify-end">
           <Button disabled={!canSave} onClick={async () => {
             const settings = {
@@ -532,7 +574,12 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
 
   const [done, setDone] = useState<Record<string, boolean>>({});
   useEffect(() => { (async () => setDone(await loadDone()))(); }, [settings, moves]);
-  const toggleDone = async (id: string, val: boolean) => { const d = { ...done, [id]: val }; await saveDone(d); setDone(d); };
+
+  const toggleDone = async (id: string, val: boolean) => {
+    const d = { ...done, [id]: val };
+    await saveDone(d);
+    setDone(d);
+  };
 
   const upcoming = events.filter(ev => diffDays(today, ev.date) >= 0).slice(0, 12);
 
@@ -605,7 +652,20 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {ev.type === 'action' && (<Checkbox checked={!!(done as any)[ev.id]} onCheckedChange={(v)=>toggleDone(ev.id, !!v)} />)}
+                  {ev.type === 'action' && (
+                    <>
+                      {/* confetti on check */}
+                      <Checkbox
+                        checked={!!(done as any)[ev.id]}
+                        onClick={(e:any) => {
+                          if (!(done as any)[ev.id]) {
+                            fireConfettiAtClient(e.clientX, e.clientY);
+                          }
+                        }}
+                        onCheckedChange={(v)=>toggleDone(ev.id, !!v)}
+                      />
+                    </>
+                  )}
                   {ev.type === "treatment" && (
                     <Dialog>
                       <DialogTrigger asChild><Button size="sm" variant="outline">{t.moveEllipsis}</Button></DialogTrigger>
