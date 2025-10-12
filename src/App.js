@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload, Share2 } from "lucide-react";
+import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload, Share2, FileText } from "lucide-react";
 import { motion } from "framer-motion";
 import { openDB } from "idb";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -18,11 +18,10 @@ import confetti from "canvas-confetti";
 import { createRoot } from "react-dom/client";
 /**
  * ChemoCare – Offline-first web app for chemotherapy scheduling
- * Added in this version (per request):
- * 1) "+ Add Appointment" quick-add button on Home (upcoming list header) AND Calendar tab toolbar.
- * 2) Extra step in first-launch wizard for adding additional appointments when creating a plan manually.
- * 3) Support naming the calendar when sharing (stored in settings, used in share bundle & ICS export).
- * 4) BUGFIXES from user report.
+ * Amendments in this version (per user request):
+ * 1) PDF export: downloadable, printer-friendly PDF (via print-to-PDF) listing all upcoming treatments, appointments & medications.
+ * 2) Background restyle: modern neomorphic pink→grey gradient with matte finish.
+ * 3) Home UX: In the Upcoming list, show "days to go" first; date directly beneath; then item title; then notes.
  */
 /******************** Utilities ********************/
 function toISODate(d) { const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate()); return dt.toISOString().slice(0, 10); }
@@ -120,6 +119,8 @@ const STRINGS = {
         moveHelp: "This shifts the chosen treatment to the new date; later ones follow your set frequency.",
         preparing: "Preparing…",
         exportICS: "Export .ics",
+        exportPDF: "Export PDF",
+        exportPDFDesc: "Creates a printer-friendly PDF list of all upcoming items.",
         shareBody: "Offline app: export an <code>.ics</code> and import into Outlook/Google/Apple. Re-export if you change the plan.",
         howToImport: "How to import",
         outlookDesktop: "<li><b>Outlook (desktop)</b>: File → Open & Export → Import/Export → Import iCalendar (.ics) → Choose the file.</li>",
@@ -215,6 +216,8 @@ const STRINGS = {
         moveHelp: "Dit verplaatst de gekozen behandeling; volgende behandelingen volgen de ingestelde frequentie.",
         preparing: "Voorbereiden…",
         exportICS: "Exporteer .ics",
+        exportPDF: "Exporteer PDF",
+        exportPDFDesc: "Maakt een printvriendelijke PDF-lijst van alle aankomende items.",
         shareBody: "Offline app: exporteer een <code>.ics</code> en importeer in Outlook/Google/Apple. Exporteer opnieuw bij wijzigingen.",
         howToImport: "Importeren",
         outlookDesktop: "<li><b>Outlook (desktop)</b>: Bestand → Openen & Exporteren → Importeren/Exporteren → iCalendar (.ics) importeren → Kies het bestand.</li>",
@@ -256,7 +259,7 @@ const STRINGS = {
         getStarted: "Aan de slag",
         choosePath: "Hoe wil je beginnen?",
         createPlan: "Plan maken",
-        startWithImport: "Start met import",
+        startWithImport: "Start met Import",
         back: "Terug",
         continue: "Doorgaan",
         // New
@@ -429,6 +432,91 @@ function downloadICS(content, filename = "chemocare.ics") {
     safeRemove(a);
     URL.revokeObjectURL(url);
 }
+/******************** PDF (Printer-friendly) ********************/
+/**
+ * Creates a printer-friendly view and opens the system's "Save as PDF" dialog.
+ * This is the most reliable, dependency-free way to generate a proper PDF in-browser.
+ */
+function openPdfOfUpcoming(events, calendarName) {
+    const today = new Date();
+    const upcoming = events.filter(ev => diffDays(today, ev.date) >= 0);
+    const fmtDate = (d, withTime) => withTime ? `${formatHuman(d)} · ${formatTime(d)}` : formatHuman(d);
+    const daysToGo = (d) => {
+        const n = diffDays(today, d);
+        if (n < 0)
+            return `${Math.abs(n)} ${STRINGS[localStorage.getItem("locale") || "nl"].overdue}`;
+        if (n === 0)
+            return STRINGS[localStorage.getItem("locale") || "nl"].today;
+        return `${n} ${STRINGS[localStorage.getItem("locale") || "nl"].daysWord} ${STRINGS[localStorage.getItem("locale") || "nl"].toGo}`;
+    };
+    const labelFor = (ev) => {
+        const t = STRINGS[localStorage.getItem("locale") || "nl"];
+        return ev.type === "treatment" ? t.treatment : (ev.type === "oneoff" ? (ev.item?.kind === "med" ? t.medication : t.appointment) : t.action);
+    };
+    const hasTime = (ev) => (ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time);
+    const rows = upcoming.map(ev => {
+        const name = ev.type === "treatment" ? `${STRINGS[localStorage.getItem("locale") || "nl"].treatment} #${ev.index + 1}` : ev.title;
+        const notes = (ev.rule?.notes || ev.item?.notes || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return `
+      <tr>
+        <td class="c-days">${daysToGo(ev.date)}</td>
+        <td class="c-date">${fmtDate(ev.date, hasTime(ev))}</td>
+        <td class="c-type">${labelFor(ev)}</td>
+        <td class="c-title">${name}</td>
+        <td class="c-notes">${notes || ""}</td>
+      </tr>`;
+    }).join("");
+    const html = `
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${calendarName} – Upcoming export</title>
+<style>
+  @page { size: A4; margin: 16mm; }
+  body { font: 12pt/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; color: #0f172a; }
+  h1 { font-size: 20pt; margin: 0 0 10px 0; }
+  .meta { font-size: 10pt; color: #475569; margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }
+  th { font-size: 10pt; color: #475569; font-weight: 600; background: #f8fafc; }
+  td.c-days { white-space: nowrap; font-weight: 600; }
+  td.c-date { white-space: nowrap; color: #334155; }
+  td.c-type { white-space: nowrap; }
+  .footer { margin-top: 10px; font-size: 9pt; color: #64748b; }
+  .print-hint { margin-top: 6px; font-size: 9pt; color: #64748b; }
+</style>
+</head>
+<body>
+  <h1>${calendarName} — Upcoming</h1>
+  <div class="meta">Generated on ${formatHuman(new Date())}</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Days</th>
+        <th>Date</th>
+        <th>Type</th>
+        <th>Title</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="footer">Includes all future treatments, appointments, and medications from your current plan.</div>
+  <script>window.print();</script>
+</body>
+</html>`;
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank");
+    // Cleanup when the window is closed
+    const timer = setInterval(() => {
+        if (w && w.closed) {
+            clearInterval(timer);
+            URL.revokeObjectURL(url);
+        }
+    }, 1000);
+}
 /******************** DOM safety ********************/
 function safeRemove(node) {
     try {
@@ -449,33 +537,156 @@ function safeRemove(node) {
 /******************** UI Bits ********************/
 function GlobalStyles() {
     return (_jsx("style", { children: `
-      /* Polished, contained layout */
+      /* Neomorphic pink→grey matte background */
       html, body, #root { height: 100%; }
-      body { margin: 0; background: #f8fafc; color: #0f172a; }
-      .cc-app-shell { min-height: 100vh; background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%); }
+      /* ——— Background: soft blush-on-slate gradient + grain + vignette ——— */
+      :root{
+        --bg-1: #f1f5f9;           /* light slate */
+        --bg-2: #f8e7f1;           /* blush */
+        --bg-3: #eef2ff;           /* indigo tint */
+        --bg-4: #fafaf9;           /* warm paper */
+        --glow: rgba(255,182,193,0.28); /* pink glow */
+      }
+
+      body{
+        margin: 0;
+        color: #0f172a;
+        background:
+          /* soft corner glows */
+          radial-gradient(900px 600px at 12% 8%, var(--glow), transparent 60%),
+          radial-gradient(800px 500px at 88% 10%, rgba(147,197,253,0.18), transparent 62%),
+          /* main diagonal wash */
+          linear-gradient(135deg, var(--bg-2) 0%, var(--bg-4) 35%, var(--bg-1) 65%, var(--bg-3) 100%);
+        background-attachment: fixed;
+      }
+
+      /* subtle matte grain + vignette */
+      body::before{
+        content:"";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        /* grain */
+        background:
+          radial-gradient(1200px 900px at 50% 10%, rgba(255,255,255,.5), transparent 45%),
+          radial-gradient(1000px 900px at 50% 120%, rgba(0,0,0,.06), transparent 55%),
+          /* faux-noise using tiny dots */
+          radial-gradient(1px 1px at 10% 20%, rgba(0,0,0,.025) 50%, transparent 51%),
+          radial-gradient(1px 1px at 30% 80%, rgba(0,0,0,.02) 50%, transparent 51%),
+          radial-gradient(1px 1px at 70% 30%, rgba(0,0,0,.02) 50%, transparent 51%),
+          radial-gradient(1px 1px at 85% 60%, rgba(0,0,0,.02) 50%, transparent 51%);
+        background-size:
+          100% 100%,
+          100% 100%,
+          3px 3px,
+          3px 3px,
+          3px 3px,
+          3px 3px;
+        mix-blend-mode: soft-light;
+        opacity: .8;
+      }
+
+      /* ——— Make the language Select look like the buttons ——— */
+      [role="combobox"][aria-haspopup="listbox"]{
+        background: linear-gradient(180deg, #ffffff, #fafafa);
+        border: 1px solid rgba(2,6,23,0.10);
+        border-radius: 12px;
+        height: 40px;             /* aligns with your Button height */
+        padding: 0 12px;
+        box-shadow:
+          0 8px 18px rgba(31,41,55,0.08),
+          inset 0 -1px 0 rgba(255,255,255,0.65);
+        transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease;
+      }
+
+      /* Hover: lift slightly, deepen shadow */
+      [role="combobox"][aria-haspopup="listbox"]:hover{
+        transform: translateY(-1px);
+        box-shadow:
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(2,6,23,0.14);
+      }
+
+      /* Focus-visible ring to match shadcn focus */
+      [role="combobox"][aria-haspopup="listbox"]:focus-visible{
+        outline: none;
+        box-shadow:
+          0 0 0 3px rgba(59,130,246,0.25),
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(59,130,246,0.45);
+      }
+
+      /* Open state: keep it “pressed” */
+      [role="combobox"][aria-haspopup="listbox"][aria-expanded="true"]{
+        transform: translateY(0);
+        box-shadow:
+          0 6px 14px rgba(31,41,55,0.08),
+          inset 0 1px 0 rgba(0,0,0,0.04);
+      }
+
+      /* Make the dropdown panel feel consistent (optional but tiny) */
+      [data-radix-popper-content-wrapper] .radix-select-content,
+      [data-radix-popper-content-wrapper] [role="listbox"]{
+        background: linear-gradient(180deg, #ffffff, #f9fafb);
+        border: 1px solid rgba(2,6,23,0.08);
+        box-shadow: 0 18px 40px rgba(2,6,23,0.15);
+        backdrop-filter: blur(6px);
+      }
+
+
+      .cc-app-shell { min-height: 100vh; }
       .cc-container { width: 100%; max-width: 1080px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
       @media (max-width: 640px) {
         .cc-container { padding: 12px; }
       }
+
+      /* Fixed min width for chips */
+      .cc-chip{
+        display: inline-flex;          /* allows width to apply on inline element */
+        min-width: 90px;               /* your requirement */
+        justify-content: center;       /* keep the label centered */
+        align-items: center;           /* vertical alignment */
+      }
+
+
+      /* Neomorphic cards */
       .cc-card-pad { padding: 24px; }
       @media (max-width: 640px) { .cc-card-pad { padding: 16px; } }
-      .cc-tabs { position: sticky; top: 0; z-index: 20; background: #fff; border-radius: 14px; border: 1px solid rgba(2,6,23,0.06); padding: 6px; margin-bottom: 8px; }
-      @media (max-width: 640px) { .cc-tabs { position: static; top: auto; } }
+/* ——— Sticky tabs: glassier + crisper border ——— */
+.cc-tabs{
+  position: sticky; top: 0; z-index: 20;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.72));
+  backdrop-filter: blur(8px) saturate(120%);
+  border: 1px solid rgba(2,6,23,0.08);
+  padding: 6px; margin-bottom: 8px;
+  box-shadow:
+    12px 12px 24px rgba(210,175,189,0.30),
+    -10px -10px 22px rgba(255,255,255,0.75);
+}
+
+      /* Inputs/rows grid */
       .cc-rule-row { 
         display: grid; 
         gap: 0.75rem; 
         align-items: start; 
         position: relative;
-        overflow: hidden; /* keep icons inside rounded border */
+        overflow: hidden;
+        background: linear-gradient(180deg, #ffffff, #fafafa);
+        box-shadow: 9px 9px 18px rgba(210, 175, 189, 0.25), -9px -9px 18px rgba(255,255,255,0.9);
+        border-radius: 16px;
+        border: 1px solid rgba(2,6,23,0.06);
       }
       @media (min-width: 768px) {
         .cc-rule-row {
           grid-template-columns:
-            9.5rem                    /* Day/Date (WIDER for Chrome calendar picker) */
-            7.5rem                     /* Time */
-            minmax(0, 1.1fr)           /* Title */
-            minmax(0, 1fr)             /* Notes */
-            max-content;               /* Controls */
+            9.5rem
+            7.5rem
+            minmax(0, 1.1fr)
+            minmax(0, 1fr)
+            max-content;
         }
         .cc-rule-row .cc-controls { 
           padding-top: 26px; 
@@ -494,7 +705,42 @@ function GlobalStyles() {
       .cc-step { text-align: center; font-size: 12px; opacity: .7; }
       .cc-step.active { font-weight: 600; opacity: 1; }
       textarea { resize: vertical; max-height: 140px; }
-` }));
+      
+      /* ——— Make header buttons visually match the language Select ——— */
+      .cc-elevated{
+        background: linear-gradient(180deg, #ffffff, #fafafa);
+        border: 1px solid rgba(2,6,23,0.10);
+        border-radius: 12px;
+        height: 40px;                 /* same as SelectTrigger */
+        padding: 0 12px;               /* keep spacing consistent */
+        box-shadow:
+          0 8px 18px rgba(31,41,55,0.08),
+          inset 0 -1px 0 rgba(255,255,255,0.65);
+        transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease;
+      }
+
+      .cc-elevated:hover{
+        transform: translateY(-1px);
+        box-shadow:
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(2,6,23,0.14);
+      }
+
+      .cc-elevated:focus-visible{
+        outline: none;
+        box-shadow:
+          0 0 0 3px rgba(59,130,246,0.25),
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(59,130,246,0.45);
+      }
+
+      /* keep icon + text aligned nicely */
+      .cc-elevated svg{ width: 1rem; height: 1rem; margin-right: .5rem; }
+
+
+    ` }));
 }
 function DayInfo({ t }) {
     return (_jsxs(Popover, { children: [_jsx(PopoverTrigger, { asChild: true, children: _jsx("button", { "aria-label": t.dayHelpBtn, className: "inline-flex items-center justify-center align-middle w-5 h-5 rounded-full border text-[10px] leading-none ml-1 hover:bg-gray-100", title: t.dayHelpTitle, children: "?" }) }), _jsx(PopoverContent, { className: "w-64 text-sm", children: _jsx("div", { dangerouslySetInnerHTML: { __html: t.dayExpl } }) })] }));
@@ -591,7 +837,7 @@ function decodeShare(code) {
 function Header({ onReset }) {
     const { locale, t, changeLocale } = useLocale();
     const mobile = useIsMobile();
-    return (_jsxs("div", { className: "w-full flex items-center justify-between mb-4", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx(CalendarIcon, { className: "w-6 h-6" }), _jsx("h1", { className: "text-2xl font-bold", children: t.appName })] }), !mobile ? (_jsxs("div", { className: "flex gap-2 items-center", children: [_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsxs(Button, { variant: "outline", children: [_jsx(Share2, { className: "w-4 h-4 mr-2" }), t.shareExport] }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.shareTitle }) }), _jsx(SharePanel, {})] })] }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-[120px]", children: _jsx(SelectValue, { placeholder: t.language }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] }), _jsxs(Button, { variant: "secondary", onClick: onReset, children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })) : (_jsxs(Sheet, { children: [_jsx(SheetTrigger, { asChild: true, children: _jsx(Button, { variant: "outline", size: "icon", "aria-label": t.menu, children: _jsx(MenuIcon, { className: "w-5 h-5" }) }) }), _jsxs(SheetContent, { side: "bottom", className: "h-[80vh] overflow-auto", children: [_jsx(SheetHeader, { children: _jsx(SheetTitle, { children: t.menu }) }), _jsxs("div", { className: "mt-4 space-y-6", children: [_jsxs("section", { className: "space-y-3", children: [_jsx("h3", { className: "font-medium", children: t.shareTitle }), _jsx(SharePanel, {})] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: t.language }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-full", children: _jsx(SelectValue, {}) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] })] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: "Reset" }), _jsxs(Button, { variant: "secondary", onClick: onReset, className: "w-full", children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })] })] })] }))] }));
+    return (_jsxs("div", { className: "w-full flex items-center justify-between mb-4", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx(CalendarIcon, { className: "w-6 h-6" }), _jsx("h1", { className: "text-2xl font-bold", children: t.appName })] }), !mobile ? (_jsxs("div", { className: "flex gap-2 items-center", children: [_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsxs(Button, { variant: "outline", className: "cc-elevated", children: [_jsx(Share2, { className: "w-4 h-4 mr-2" }), t.shareExport] }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.shareTitle }) }), _jsx(SharePanel, {})] })] }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-[120px] cc-elevated", children: _jsx(SelectValue, { placeholder: t.language }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] }), _jsxs(Button, { variant: "secondary", className: "cc-elevated", onClick: onReset, children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })) : (_jsxs(Sheet, { children: [_jsx(SheetTrigger, { asChild: true, children: _jsx(Button, { variant: "outline", size: "icon", "aria-label": t.menu, children: _jsx(MenuIcon, { className: "w-5 h-5" }) }) }), _jsxs(SheetContent, { side: "bottom", className: "h-[80vh] overflow-auto", children: [_jsx(SheetHeader, { children: _jsx(SheetTitle, { children: t.menu }) }), _jsxs("div", { className: "mt-4 space-y-6", children: [_jsxs("section", { className: "space-y-3", children: [_jsx("h3", { className: "font-medium", children: t.shareTitle }), _jsx(SharePanel, {})] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: t.language }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-full", children: _jsx(SelectValue, {}) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] })] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: "Reset" }), _jsxs(Button, { variant: "secondary", onClick: onReset, className: "w-full", children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })] })] })] }))] }));
 }
 /*** Setup Wizard (reused for Create path) ***/
 function SetupWizard({ onComplete, hideInlineImport = false }) {
@@ -654,7 +900,7 @@ function SetupWizard({ onComplete, hideInlineImport = false }) {
             alert(t.importFail);
         }
     };
-    return (_jsxs("div", { className: "grid gap-6", children: [_jsx(Card, { className: "max-w-3xl mx-auto", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: t.setupTitle }), _jsx("p", { className: "text-sm opacity-80 mb-4", dangerouslySetInnerHTML: { __html: t.setupHelp } }), _jsxs("div", { className: "grid md:grid-cols-3 gap-4 mb-6", children: [_jsxs("div", { children: [_jsx(Label, { children: t.firstDate }), _jsx(Input, { type: "date", value: startDate, onChange: e => setStartDate(e.target.value) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.frequency }), _jsx(Input, { type: "number", step: 1, min: 1, value: frequencyDays, onChange: e => setFrequencyDays(parseInt(e.target.value || "0", 10)) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.cycles }), _jsx(Input, { type: "number", step: 1, min: 1, value: cycles, onChange: e => setCycles(e.target.value === "" ? "" : parseInt(e.target.value, 10)) })] })] }), _jsxs("div", { className: "mb-6", children: [_jsx(Label, { children: t.calendarNameLabel }), _jsx(Input, { value: calendarName, onChange: (e) => setCalendarName(e.target.value) })] }), _jsxs("div", { className: "flex items-center justify-between mb-1", children: [_jsxs("div", { children: [_jsx("h3", { className: "font-medium", children: t.medActions }), _jsx("p", { className: "text-xs opacity-70", children: t.medActionsHelp })] }), _jsxs(Button, { variant: "outline", onClick: addRule, children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), t.addAction] })] }), _jsx("div", { className: "space-y-2 mb-4", children: medRules.map(rule => (_jsxs("div", { className: "cc-rule-row p-3 rounded-xl border bg-white", children: [_jsxs("div", { children: [_jsxs("div", { className: "flex items-center gap-1", children: [_jsx(Label, { className: "text-xs", children: t.dayField }), _jsx(DayInfo, { t: t })] }), _jsx(DayInput, { value: rule.day, onChange: (n) => updateRule(rule.id, { day: n }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.timeOfDay }), _jsx(Input, { type: "time", value: rule.time || "", onChange: e => updateRule(rule.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.title }), _jsx(Input, { value: rule.title, onChange: e => updateRule(rule.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.notesOpt }), _jsx(Textarea, { rows: 2, value: rule.notes, onChange: e => updateRule(rule.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsx(Checkbox, { checked: rule.enabled, onCheckedChange: v => updateRule(rule.id, { enabled: !!v }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => duplicateRule(rule), title: t.duplicateAction, children: _jsx(Copy, { className: "w-4 h-4" }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteRule(rule.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, rule.id))) }), _jsx("div", { className: "flex justify-end", children: _jsx(Button, { disabled: !canSave, onClick: async () => {
+    return (_jsxs("div", { className: "grid gap-6", children: [_jsx(Card, { className: "max-w-3xl mx-auto", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h2", { className: "text-xl font-semibold mb-2", children: t.setupTitle }), _jsx("p", { className: "text-sm opacity-80 mb-4", dangerouslySetInnerHTML: { __html: t.setupHelp } }), _jsxs("div", { className: "grid md:grid-cols-3 gap-4 mb-6", children: [_jsxs("div", { children: [_jsx(Label, { children: t.firstDate }), _jsx(Input, { type: "date", value: startDate, onChange: e => setStartDate(e.target.value) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.frequency }), _jsx(Input, { type: "number", step: 1, min: 1, value: frequencyDays, onChange: e => setFrequencyDays(parseInt(e.target.value || "0", 10)) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.cycles }), _jsx(Input, { type: "number", step: 1, min: 1, value: cycles, onChange: e => setCycles(e.target.value === "" ? "" : parseInt(e.target.value, 10)) })] })] }), _jsxs("div", { className: "mb-6", children: [_jsx(Label, { children: t.calendarNameLabel }), _jsx(Input, { value: calendarName, onChange: (e) => setCalendarName(e.target.value) })] }), _jsxs("div", { className: "flex items-center justify-between mb-1", children: [_jsxs("div", { children: [_jsx("h3", { className: "font-medium", children: t.medActions }), _jsx("p", { className: "text-xs opacity-70", children: t.medActionsHelp })] }), _jsxs(Button, { variant: "outline", onClick: addRule, children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), t.addAction] })] }), _jsx("div", { className: "space-y-2 mb-4", children: medRules.map(rule => (_jsxs("div", { className: "cc-rule-row p-3", children: [_jsxs("div", { children: [_jsxs("div", { className: "flex items-center gap-1", children: [_jsx(Label, { className: "text-xs", children: t.dayField }), _jsx(DayInfo, { t: t })] }), _jsx(DayInput, { value: rule.day, onChange: (n) => updateRule(rule.id, { day: n }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.timeOfDay }), _jsx(Input, { type: "time", value: rule.time || "", onChange: e => updateRule(rule.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.title }), _jsx(Input, { value: rule.title, onChange: e => updateRule(rule.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.notesOpt }), _jsx(Textarea, { rows: 2, value: rule.notes, onChange: e => updateRule(rule.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsx(Checkbox, { checked: rule.enabled, onCheckedChange: v => updateRule(rule.id, { enabled: !!v }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => duplicateRule(rule), title: t.duplicateAction, children: _jsx(Copy, { className: "w-4 h-4" }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteRule(rule.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, rule.id))) }), _jsx("div", { className: "flex justify-end", children: _jsx(Button, { disabled: !canSave, onClick: async () => {
                                     const settings = {
                                         startDate,
                                         frequencyDays,
@@ -719,7 +965,7 @@ function WizardAddAppointments({ onFinish, onBack }) {
     const deleteOneOff = (id) => setVals((v) => ({ ...v, oneOffs: (v.oneOffs || []).filter((o) => o.id !== id) }));
     if (!vals)
         return _jsx(Card, { className: "max-w-3xl mx-auto", children: _jsx(CardContent, { className: "cc-card-pad", children: t.preparing }) });
-    return (_jsx(Card, { className: "max-w-3xl mx-auto", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("div", { className: "mb-3", children: _jsx(Button, { variant: "outline", onClick: onBack, children: t.back }) }), _jsx("h3", { className: "font-medium mb-1", children: t.addAppointmentsStep }), _jsx("p", { className: "text-xs opacity-70 mb-3", children: STRINGS[localStorage.getItem("locale") || "nl"].oneOffsHelp }), _jsx("div", { className: "space-y-2 mb-3", children: (vals.oneOffs || []).map((o) => (_jsxs("div", { className: "cc-rule-row p-3 rounded-xl border bg-white", children: [_jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].date }), _jsx(Input, { type: "date", value: o.dateISO, onChange: e => updateOneOff(o.id, { dateISO: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].timeOfDay }), _jsx(Input, { type: "time", value: o.time || "", onChange: e => updateOneOff(o.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].title }), _jsx(Input, { value: o.title, onChange: e => updateOneOff(o.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].notes }), _jsx(Textarea, { rows: 2, value: o.notes || "", onChange: e => updateOneOff(o.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsxs(Select, { value: o.kind, onValueChange: (v) => updateOneOff(o.id, { kind: v }), children: [_jsx(SelectTrigger, { className: "w-[120px]", children: _jsx(SelectValue, { placeholder: STRINGS[localStorage.getItem("locale") || "nl"].type }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "appointment", children: STRINGS[localStorage.getItem("locale") || "nl"].appointment }), _jsx(SelectItem, { value: "med", children: STRINGS[localStorage.getItem("locale") || "nl"].medication })] })] }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteOneOff(o.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, o.id))) }), _jsxs("div", { className: "flex flex-wrap gap-2 mb-4", children: [_jsxs(Button, { variant: "outline", onClick: addOneOff, children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addAppointment] }), _jsxs(Button, { variant: "outline", onClick: () => setVals((v) => ({ ...v, oneOffs: [...(v.oneOffs || []), { id: crypto.randomUUID(), dateISO: "", time: "", title: "", notes: "", kind: "med" }] })), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addMedication] })] }), _jsx("div", { className: "flex justify-end", children: _jsx(Button, { onClick: async () => { await saveSettings(vals); onFinish(); }, children: t.finish }) })] }) }));
+    return (_jsx(Card, { className: "max-w-3xl mx-auto", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("div", { className: "mb-3", children: _jsx(Button, { variant: "outline", onClick: onBack, children: t.back }) }), _jsx("h3", { className: "font-medium mb-1", children: t.addAppointmentsStep }), _jsx("p", { className: "text-xs opacity-70 mb-3", children: STRINGS[localStorage.getItem("locale") || "nl"].oneOffsHelp }), _jsx("div", { className: "space-y-2 mb-3", children: (vals.oneOffs || []).map((o) => (_jsxs("div", { className: "cc-rule-row p-3", children: [_jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].date }), _jsx(Input, { type: "date", value: o.dateISO, onChange: e => updateOneOff(o.id, { dateISO: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].timeOfDay }), _jsx(Input, { type: "time", value: o.time || "", onChange: e => updateOneOff(o.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].title }), _jsx(Input, { value: o.title, onChange: e => updateOneOff(o.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].notes }), _jsx(Textarea, { rows: 2, value: o.notes || "", onChange: e => updateOneOff(o.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsxs(Select, { value: o.kind, onValueChange: (v) => updateOneOff(o.id, { kind: v }), children: [_jsx(SelectTrigger, { className: "w-[120px]", children: _jsx(SelectValue, { placeholder: STRINGS[localStorage.getItem("locale") || "nl"].type }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "appointment", children: STRINGS[localStorage.getItem("locale") || "nl"].appointment }), _jsx(SelectItem, { value: "med", children: STRINGS[localStorage.getItem("locale") || "nl"].medication })] })] }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteOneOff(o.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, o.id))) }), _jsxs("div", { className: "flex flex-wrap gap-2 mb-4", children: [_jsxs(Button, { variant: "outline", onClick: addOneOff, children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addAppointment] }), _jsxs(Button, { variant: "outline", onClick: () => setVals((v) => ({ ...v, oneOffs: [...(v.oneOffs || []), { id: crypto.randomUUID(), dateISO: "", time: "", title: "", notes: "", kind: "med" }] })), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addMedication] })] }), _jsx("div", { className: "flex justify-end", children: _jsx(Button, { onClick: async () => { await saveSettings(vals); onFinish(); }, children: t.finish }) })] }) }));
 }
 /*** First-launch Wizard wrapper ***/
 function FirstLaunchWizard({ onDone, onReset }) {
@@ -778,12 +1024,19 @@ function Home({ settings, moves, refresh }) {
             return "bg-blue-100";
         return "bg-yellow-100";
     };
-    return (_jsxs("div", { className: "grid lg:grid-cols-3 gap-4", children: [_jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextAction }), nextActionEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextActionEv.date, today) ? "bg-yellow-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm opacity-70", children: isSameDay(nextActionEv.date, today) ? t.dueToday :
-                                        `${Math.abs(daysUntil(nextActionEv.date))} ${t.daysWord} ${daysUntil(nextActionEv.date) < 0 ? t.overdue : t.toGo}` }), _jsx("div", { className: "text-lg font-medium", children: nextActionEv.title }), nextActionEv.rule?.notes ? (_jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: nextActionEv.rule.notes })) : null, _jsxs("div", { className: "text-sm opacity-80", children: [formatHuman(nextActionEv.date), nextActionEv.rule?.time ? ` · ${formatTime(nextActionEv.date)}` : ""] })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextTreatment }), nextTreatmentEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextTreatmentEv.date, today) ? "bg-green-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm opacity-70", children: isSameDay(nextTreatmentEv.date, today) ? t.today : `${daysUntil(nextTreatmentEv.date)} ${t.daysWord}` }), _jsx("div", { className: "text-lg font-medium", children: `${t.treatment} #${nextTreatmentEv.index + 1}` }), _jsx("div", { className: "text-sm opacity-80", children: formatHuman(nextTreatmentEv.date) })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.courseProgress }), settings?.cycles ? (() => {
+    const daysToGoText = (d) => {
+        const n = diffDays(today, d);
+        if (n < 0)
+            return `${Math.abs(n)} ${t.overdue}`;
+        if (n === 0)
+            return t.today;
+        return `${n} ${t.daysWord} ${t.toGo}`;
+    };
+    return (_jsxs("div", { className: "grid lg:grid-cols-3 gap-4", children: [_jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextAction }), nextActionEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextActionEv.date, today) ? "bg-yellow-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm font-semibold", children: daysToGoText(nextActionEv.date) }), _jsxs("div", { className: "text-sm opacity-80", children: [formatHuman(nextActionEv.date), nextActionEv.rule?.time ? ` · ${formatTime(nextActionEv.date)}` : ""] }), _jsx("div", { className: "text-lg font-medium mt-1", children: nextActionEv.title }), nextActionEv.rule?.notes ? (_jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: nextActionEv.rule.notes })) : null] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextTreatment }), nextTreatmentEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextTreatmentEv.date, today) ? "bg-green-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm font-semibold", children: daysToGoText(nextTreatmentEv.date) }), _jsx("div", { className: "text-sm opacity-80", children: formatHuman(nextTreatmentEv.date) }), _jsx("div", { className: "text-lg font-medium mt-1", children: `${t.treatment} #${nextTreatmentEv.index + 1}` })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.courseProgress }), settings?.cycles ? (() => {
                             const { done, total } = countCompletedTreatments(settings, moves);
                             const pct = Math.max(0, Math.min(1, total ? done / total : 0));
                             return (_jsxs("div", { className: "flex items-center gap-4", children: [_jsx(DonutProgress, { pct: pct }), _jsxs("div", { children: [_jsx("div", { className: "text-lg font-medium", children: t.progressPct(Math.round(pct * 100)) }), _jsxs("div", { className: "text-sm opacity-70", children: [done, "/", total, " ", t.cyclesCompletedSuffix] })] })] }));
-                        })() : (_jsx("p", { className: "text-sm opacity-70", children: t.setCyclesHint }))] }) }), _jsx(Card, { className: "lg:col-span-3", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsxs("div", { className: "flex items-center justify-between mb-3", children: [_jsx("h3", { className: "font-semibold", children: t.upcoming }), _jsx(QuickAddAppointment, { onAdded: refresh })] }), _jsx("div", { className: "divide-y", children: upcoming.map(ev => (_jsxs("div", { className: `py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`, children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsx("span", { className: `text-xs px-2 py-1 rounded-full border ${badgeColor(ev)}`, children: labelFor(ev) }), _jsxs("div", { children: [_jsx("div", { className: `font-medium ${ev.type === 'action' && done[ev.id] ? 'line-through opacity-60' : ''}`, children: ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title }), _jsxs("div", { className: "text-xs opacity-70", children: [formatHuman(ev.date), hasTime(ev) ? ` · ${formatTime(ev.date)}` : "", isSameDay(ev.date, today) ? ` · ${t.today}` : ""] }), ev.type === 'action' && ev.rule?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.rule.notes }) : null, ev.type === 'oneoff' && ev.item?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.item.notes }) : null] })] }), _jsx("div", { className: "flex items-center gap-2", children: ev.type === 'action' && (_jsx(Checkbox, { checked: !!done[ev.id], onClick: (e) => { if (!done[ev.id]) {
+                        })() : (_jsx("p", { className: "text-sm opacity-70", children: t.setCyclesHint }))] }) }), _jsx(Card, { className: "lg:col-span-3", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsxs("div", { className: "flex items-center justify-between mb-3", children: [_jsx("h3", { className: "font-semibold", children: t.upcoming }), _jsx(QuickAddAppointment, { onAdded: refresh })] }), _jsx("div", { className: "divide-y", children: upcoming.map(ev => (_jsxs("div", { className: `py-3 flex items-start justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`, children: [_jsxs("div", { className: "flex items-start gap-3", children: [_jsx("span", { className: `cc-chip text-xs px-2 py-1 rounded-full border mt-1 ${badgeColor(ev)}`, children: labelFor(ev) }), _jsxs("div", { children: [_jsx("div", { className: "text-sm font-semibold", children: daysToGoText(ev.date) }), _jsxs("div", { className: "text-xs opacity-70", children: [formatHuman(ev.date), hasTime(ev) ? ` · ${formatTime(ev.date)}` : "", isSameDay(ev.date, today) ? ` · ${t.today}` : ""] }), _jsx("div", { className: `mt-1 font-medium ${ev.type === 'action' && done[ev.id] ? 'line-through opacity-60' : ''}`, children: ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title }), ev.type === 'action' && ev.rule?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.rule.notes }) : null, ev.type === 'oneoff' && ev.item?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.item.notes }) : null] })] }), _jsx("div", { className: "flex items-center gap-2", children: ev.type === 'action' && (_jsx(Checkbox, { checked: !!done[ev.id], onClick: (e) => { if (!done[ev.id]) {
                                                 fireConfettiAtClient(e.clientX, e.clientY);
                                             } }, onCheckedChange: (v) => toggleDone(ev.id, !!v) })) })] }, ev.id))) })] }) })] }));
 }
@@ -884,12 +1137,12 @@ function SharePanel() {
     }, []);
     if (!ready)
         return _jsx("p", { className: "text-sm", children: t.preparing });
-    return (_jsxs("div", { className: "space-y-3", children: [_jsxs("div", { className: "grid md:grid-cols-2 gap-3", children: [_jsxs("div", { children: [_jsx("p", { className: "text-sm opacity-80", dangerouslySetInnerHTML: { __html: t.shareBody } }), _jsxs("div", { className: "mt-2", children: [_jsx(Label, { className: "text-xs", children: t.calendarNameLabel }), _jsx(Input, { value: calendarName, onChange: (e) => setCalendarName(e.target.value) })] }), _jsx("div", { className: "flex gap-2 mt-3", children: _jsxs(Button, { onClick: () => {
-                                        const ics = generateICS(events, { calendarName: calendarName?.trim() || "ChemoCare" });
-                                        const safeName = (calendarName?.trim() || "ChemoCare").replace(/[^a-z0-9-_]+/gi, "_");
-                                        downloadICS(ics, `ChemoCare-${safeName}-${toISODate(new Date())}.ics`);
-                                    }, children: [_jsx(Download, { className: "w-4 h-4 mr-2" }), t.exportICS] }) })] }), _jsxs("div", { children: [_jsx("h4", { className: "font-medium", children: t.shareInApp }), _jsxs("div", { className: "flex flex-wrap gap-2", children: [_jsx(Button, { variant: "outline", onClick: copyCode, children: t.copyShareCode }), _jsx(Button, { variant: "outline", onClick: downloadJson, children: t.downloadFile }), _jsxs(Button, { variant: "outline", onClick: () => document.getElementById("share-file-input")?.click(), children: [_jsx(Upload, { className: "w-4 h-4 mr-2" }), t.uploadFile] }), _jsx("input", { id: "share-file-input", type: "file", accept: "application/json", className: "hidden", onChange: e => { const f = e.target.files?.[0]; if (f)
-                                            uploadJson(f); } })] }), _jsxs("div", { className: "mt-2", children: [_jsx(Label, { className: "text-xs", children: t.pasteShareCode }), _jsx(Textarea, { rows: 3, value: code, onChange: e => setCode(e.target.value) }), _jsx("div", { className: "mt-2", children: _jsx(Button, { onClick: loadFromCode, children: t.load }) })] })] })] }), _jsxs("details", { className: "rounded-lg border p-3", children: [_jsx("summary", { className: "cursor-pointer font-medium", children: t.howToImport }), _jsx("ul", { className: "list-disc ml-6 text-sm mt-2 space-y-1", dangerouslySetInnerHTML: { __html: STRINGS[localStorage.getItem("locale") || "nl"].outlookDesktop + STRINGS[localStorage.getItem("locale") || "nl"].outlookWeb + STRINGS[localStorage.getItem("locale") || "nl"].googleCal + STRINGS[localStorage.getItem("locale") || "nl"].appleCal } }), _jsx("p", { className: "text-xs opacity-70 mt-2", children: t.subNote })] })] }));
+    return (_jsxs("div", { className: "space-y-3", children: [_jsxs("div", { className: "grid md:grid-cols-2 gap-3", children: [_jsxs("div", { children: [_jsx("p", { className: "text-sm opacity-80", dangerouslySetInnerHTML: { __html: t.shareBody } }), _jsxs("div", { className: "mt-2", children: [_jsx(Label, { className: "text-xs", children: t.calendarNameLabel }), _jsx(Input, { value: calendarName, onChange: (e) => setCalendarName(e.target.value) })] }), _jsxs("div", { className: "flex flex-wrap gap-2 mt-3", children: [_jsxs(Button, { onClick: () => {
+                                            const ics = generateICS(events, { calendarName: calendarName?.trim() || "ChemoCare" });
+                                            const safeName = (calendarName?.trim() || "ChemoCare").replace(/[^a-z0-9-_]+/gi, "_");
+                                            downloadICS(ics, `ChemoCare-${safeName}-${toISODate(new Date())}.ics`);
+                                        }, children: [_jsx(Download, { className: "w-4 h-4 mr-2" }), t.exportICS] }), _jsxs(Button, { variant: "outline", onClick: () => openPdfOfUpcoming(events, calendarName?.trim() || "ChemoCare"), children: [_jsx(FileText, { className: "w-4 h-4 mr-2" }), t.exportPDF] })] }), _jsx("p", { className: "text-xs opacity-70 mt-1", children: t.exportPDFDesc })] }), _jsxs("div", { children: [_jsx("h4", { className: "font-medium", children: t.shareInApp }), _jsxs("div", { className: "flex flex-wrap gap-2", children: [_jsx(Button, { variant: "outline", onClick: copyCode, children: t.copyShareCode }), _jsx(Button, { variant: "outline", onClick: downloadJson, children: t.downloadFile }), _jsxs(Button, { variant: "outline", onClick: () => document.getElementById("share-file-input")?.click(), children: [_jsx(Upload, { className: "w-4 h-4 mr-2" }), t.uploadFile] }), _jsx("input", { id: "share-file-input", type: "file", accept: "application/json", className: "hidden", onChange: e => { const f = e.target.files?.[0]; if (f)
+                                            uploadJson(f); } })] }), _jsxs("div", { className: "mt-2", children: [_jsx(Label, { className: "text-xs", children: t.pasteShareCode }), _jsx(Textarea, { rows: 3, value: code, onChange: e => setCode(e.target.value) }), _jsx("div", { className: "mt-2", children: _jsx(Button, { onClick: loadFromCode, children: t.load }) })] })] })] }), _jsxs("details", { className: "rounded-lg border p-3 bg-white/70 backdrop-blur", children: [_jsx("summary", { className: "cursor-pointer font-medium", children: t.howToImport }), _jsx("ul", { className: "list-disc ml-6 text-sm mt-2 space-y-1", dangerouslySetInnerHTML: { __html: STRINGS[localStorage.getItem("locale") || "nl"].outlookDesktop + STRINGS[localStorage.getItem("locale") || "nl"].outlookWeb + STRINGS[localStorage.getItem("locale") || "nl"].googleCal + STRINGS[localStorage.getItem("locale") || "nl"].appleCal } }), _jsx("p", { className: "text-xs opacity-70 mt-2", children: t.subNote })] })] }));
 }
 /*** Month Calendar ***/
 function MonthCalendar({ events }) {
@@ -956,7 +1209,7 @@ function PlanEditor({ settings, onSaved }) {
     const updateOneOff = (id, patch) => update({ oneOffs: (vals.oneOffs || []).map((o) => o.id === id ? { ...o, ...patch } : o) });
     const deleteOneOff = (id) => update({ oneOffs: (vals.oneOffs || []).filter((o) => o.id !== id) });
     const showSaved = () => { setSavedFlag(true); setTimeout(() => setSavedFlag(false), 2200); };
-    return (_jsxs("div", { className: "space-y-4", children: [_jsxs("div", { className: "grid md:grid-cols-3 gap-4", children: [_jsxs("div", { children: [_jsx(Label, { children: t.firstDate }), _jsx(Input, { type: "date", value: vals.startDate, onChange: e => update({ startDate: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.frequency }), _jsx(Input, { type: "number", step: 1, min: 1, value: vals.frequencyDays, onChange: e => update({ frequencyDays: parseInt(e.target.value || "0", 10) }) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.cycles }), _jsx(Input, { type: "number", step: 1, min: 1, value: vals.cycles ?? "", onChange: e => update({ cycles: e.target.value === "" ? null : parseInt(e.target.value, 10) }) })] })] }), _jsxs("div", { children: [_jsx(Label, { children: STRINGS[localStorage.getItem("locale") || "nl"].calendarNameLabel }), _jsx(Input, { value: vals.calendarName, onChange: (e) => update({ calendarName: e.target.value }) })] }), _jsxs("div", { className: "flex items-center justify-between", children: [_jsxs("div", { children: [_jsx("h4", { className: "font-medium", children: t.medActions }), _jsx("p", { className: "text-xs opacity-70", children: t.medActionsHelp })] }), _jsxs(Button, { variant: "outline", onClick: () => addRule(), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), t.addAction] })] }), _jsx("div", { className: "space-y-2", children: vals.medRules.map((rule) => (_jsxs("div", { className: "cc-rule-row p-3 rounded-xl border bg-white", children: [_jsxs("div", { children: [_jsxs("div", { className: "flex items-center gap-1", children: [_jsx(Label, { className: "text-xs", children: t.dayField }), _jsx(DayInfo, { t: t })] }), _jsx(DayInput, { value: rule.day, onChange: (n) => updateRule(rule.id, { day: n }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.timeOfDay }), _jsx(Input, { type: "time", value: rule.time || "", onChange: e => updateRule(rule.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.title }), _jsx(Input, { value: rule.title, onChange: e => updateRule(rule.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.notes }), _jsx(Textarea, { rows: 2, value: rule.notes || "", onChange: e => updateRule(rule.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsx(Checkbox, { checked: rule.enabled, onCheckedChange: v => updateRule(rule.id, { enabled: !!v }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => duplicateRule(rule), title: t.duplicateAction, children: _jsx(Copy, { className: "w-4 h-4" }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteRule(rule.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, rule.id))) }), _jsx("h4", { className: "font-medium mt-6", children: STRINGS[localStorage.getItem("locale") || "nl"].oneOffsTitle }), _jsx("p", { className: "text-xs opacity-70", children: STRINGS[localStorage.getItem("locale") || "nl"].oneOffsHelp }), _jsxs("div", { className: "space-y-2", children: [(vals.oneOffs || []).map((o) => (_jsxs("div", { className: "cc-rule-row p-3 rounded-xl border bg-white", children: [_jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].date }), _jsx(Input, { type: "date", value: o.dateISO, onChange: e => updateOneOff(o.id, { dateISO: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].timeOfDay }), _jsx(Input, { type: "time", value: o.time || "", onChange: e => updateOneOff(o.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].title }), _jsx(Input, { value: o.title, onChange: e => updateOneOff(o.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].notes }), _jsx(Textarea, { rows: 2, value: o.notes || "", onChange: e => updateOneOff(o.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsxs(Select, { value: o.kind, onValueChange: (v) => updateOneOff(o.id, { kind: v }), children: [_jsx(SelectTrigger, { className: "w-[120px]", children: _jsx(SelectValue, { placeholder: STRINGS[localStorage.getItem("locale") || "nl"].type }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "appointment", children: STRINGS[localStorage.getItem("locale") || "nl"].appointment }), _jsx(SelectItem, { value: "med", children: STRINGS[localStorage.getItem("locale") || "nl"].medication })] })] }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteOneOff(o.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, o.id))), _jsxs("div", { className: "flex flex-wrap gap-2", children: [_jsxs(Button, { variant: "outline", onClick: () => addOneOff("appointment"), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addAppointment] }), _jsxs(Button, { variant: "outline", onClick: () => addOneOff("med"), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addMedication] })] })] }), _jsxs("div", { className: "flex", children: [_jsx("div", { className: "flex-1" }), _jsx(Button, { disabled: !dirty, onClick: async () => {
+    return (_jsxs("div", { className: "space-y-4", children: [_jsxs("div", { className: "grid md:grid-cols-3 gap-4", children: [_jsxs("div", { children: [_jsx(Label, { children: t.firstDate }), _jsx(Input, { type: "date", value: vals.startDate, onChange: e => update({ startDate: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.frequency }), _jsx(Input, { type: "number", step: 1, min: 1, value: vals.frequencyDays, onChange: e => update({ frequencyDays: parseInt(e.target.value || "0", 10) }) })] }), _jsxs("div", { children: [_jsx(Label, { children: t.cycles }), _jsx(Input, { type: "number", step: 1, min: 1, value: vals.cycles ?? "", onChange: e => update({ cycles: e.target.value === "" ? null : parseInt(e.target.value, 10) }) })] })] }), _jsxs("div", { children: [_jsx(Label, { children: STRINGS[localStorage.getItem("locale") || "nl"].calendarNameLabel }), _jsx(Input, { value: vals.calendarName, onChange: (e) => update({ calendarName: e.target.value }) })] }), _jsxs("div", { className: "flex items-center justify-between", children: [_jsxs("div", { children: [_jsx("h4", { className: "font-medium", children: t.medActions }), _jsx("p", { className: "text-xs opacity-70", children: t.medActionsHelp })] }), _jsxs(Button, { variant: "outline", onClick: () => addRule(), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), t.addAction] })] }), _jsx("div", { className: "space-y-2", children: vals.medRules.map((rule) => (_jsxs("div", { className: "cc-rule-row p-3", children: [_jsxs("div", { children: [_jsxs("div", { className: "flex items-center gap-1", children: [_jsx(Label, { className: "text-xs", children: t.dayField }), _jsx(DayInfo, { t: t })] }), _jsx(DayInput, { value: rule.day, onChange: (n) => updateRule(rule.id, { day: n }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.timeOfDay }), _jsx(Input, { type: "time", value: rule.time || "", onChange: e => updateRule(rule.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.title }), _jsx(Input, { value: rule.title, onChange: e => updateRule(rule.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: t.notes }), _jsx(Textarea, { rows: 2, value: rule.notes || "", onChange: e => updateRule(rule.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsx(Checkbox, { checked: rule.enabled, onCheckedChange: v => updateRule(rule.id, { enabled: !!v }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => duplicateRule(rule), title: t.duplicateAction, children: _jsx(Copy, { className: "w-4 h-4" }) }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteRule(rule.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, rule.id))) }), _jsx("h4", { className: "font-medium mt-6", children: STRINGS[localStorage.getItem("locale") || "nl"].oneOffsTitle }), _jsx("p", { className: "text-xs opacity-70", children: STRINGS[localStorage.getItem("locale") || "nl"].oneOffsHelp }), _jsxs("div", { className: "space-y-2", children: [(vals.oneOffs || []).map((o) => (_jsxs("div", { className: "cc-rule-row p-3", children: [_jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].date }), _jsx(Input, { type: "date", value: o.dateISO, onChange: e => updateOneOff(o.id, { dateISO: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].timeOfDay }), _jsx(Input, { type: "time", value: o.time || "", onChange: e => updateOneOff(o.id, { time: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].title }), _jsx(Input, { value: o.title, onChange: e => updateOneOff(o.id, { title: e.target.value }) })] }), _jsxs("div", { children: [_jsx(Label, { className: "text-xs", children: STRINGS[localStorage.getItem("locale") || "nl"].notes }), _jsx(Textarea, { rows: 2, value: o.notes || "", onChange: e => updateOneOff(o.id, { notes: e.target.value }) })] }), _jsxs("div", { className: "cc-controls flex items-center gap-2", children: [_jsxs(Select, { value: o.kind, onValueChange: (v) => updateOneOff(o.id, { kind: v }), children: [_jsx(SelectTrigger, { className: "w-[120px]", children: _jsx(SelectValue, { placeholder: STRINGS[localStorage.getItem("locale") || "nl"].type }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "appointment", children: STRINGS[localStorage.getItem("locale") || "nl"].appointment }), _jsx(SelectItem, { value: "med", children: STRINGS[localStorage.getItem("locale") || "nl"].medication })] })] }), _jsx(Button, { size: "icon", variant: "ghost", onClick: () => deleteOneOff(o.id), children: _jsx(Trash2, { className: "w-4 h-4" }) })] })] }, o.id))), _jsxs("div", { className: "flex flex-wrap gap-2", children: [_jsxs(Button, { variant: "outline", onClick: () => addOneOff("appointment"), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addAppointment] }), _jsxs(Button, { variant: "outline", onClick: () => addOneOff("med"), children: [_jsx(Plus, { className: "w-4 h-4 mr-2" }), STRINGS[localStorage.getItem("locale") || "nl"].addMedication] })] })] }), _jsxs("div", { className: "flex", children: [_jsx("div", { className: "flex-1" }), _jsx(Button, { disabled: !dirty, onClick: async () => {
                             const oldSettings = await loadSettings();
                             const oldMoves = await loadMoves();
                             if (oldSettings) {

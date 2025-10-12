@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload, Share2 } from "lucide-react";
+import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload, Share2, FileText } from "lucide-react";
 import { motion } from "framer-motion";
 import { openDB } from "idb";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -18,11 +18,10 @@ import { createRoot } from "react-dom/client";
 
 /**
  * ChemoCare – Offline-first web app for chemotherapy scheduling
- * Added in this version (per request):
- * 1) "+ Add Appointment" quick-add button on Home (upcoming list header) AND Calendar tab toolbar.
- * 2) Extra step in first-launch wizard for adding additional appointments when creating a plan manually.
- * 3) Support naming the calendar when sharing (stored in settings, used in share bundle & ICS export).
- * 4) BUGFIXES from user report.
+ * Amendments in this version (per user request):
+ * 1) PDF export: downloadable, printer-friendly PDF (via print-to-PDF) listing all upcoming treatments, appointments & medications.
+ * 2) Background restyle: modern neomorphic pink→grey gradient with matte finish.
+ * 3) Home UX: In the Upcoming list, show "days to go" first; date directly beneath; then item title; then notes.
  */
 
 /******************** Utilities ********************/
@@ -119,6 +118,8 @@ const STRINGS = {
     moveHelp: "This shifts the chosen treatment to the new date; later ones follow your set frequency.",
     preparing: "Preparing…",
     exportICS: "Export .ics",
+    exportPDF: "Export PDF",
+    exportPDFDesc: "Creates a printer-friendly PDF list of all upcoming items.",
     shareBody: "Offline app: export an <code>.ics</code> and import into Outlook/Google/Apple. Re-export if you change the plan.",
     howToImport: "How to import",
     outlookDesktop: "<li><b>Outlook (desktop)</b>: File → Open & Export → Import/Export → Import iCalendar (.ics) → Choose the file.</li>",
@@ -217,6 +218,8 @@ const STRINGS = {
     moveHelp: "Dit verplaatst de gekozen behandeling; volgende behandelingen volgen de ingestelde frequentie.",
     preparing: "Voorbereiden…",
     exportICS: "Exporteer .ics",
+    exportPDF: "Exporteer PDF",
+    exportPDFDesc: "Maakt een printvriendelijke PDF-lijst van alle aankomende items.",
     shareBody: "Offline app: exporteer een <code>.ics</code> en importeer in Outlook/Google/Apple. Exporteer opnieuw bij wijzigingen.",
     howToImport: "Importeren",
     outlookDesktop: "<li><b>Outlook (desktop)</b>: Bestand → Openen & Exporteren → Importeren/Exporteren → iCalendar (.ics) importeren → Kies het bestand.</li>",
@@ -260,7 +263,7 @@ const STRINGS = {
     getStarted: "Aan de slag",
     choosePath: "Hoe wil je beginnen?",
     createPlan: "Plan maken",
-    startWithImport: "Start met import",
+    startWithImport: "Start met Import",
     back: "Terug",
     continue: "Doorgaan",
 
@@ -405,6 +408,92 @@ function downloadICS(content: string, filename = "chemocare.ics") {
   a.href = url; a.download = filename; document.body.appendChild(a); a.click(); safeRemove(a); URL.revokeObjectURL(url);
 }
 
+/******************** PDF (Printer-friendly) ********************/
+/**
+ * Creates a printer-friendly view and opens the system's "Save as PDF" dialog.
+ * This is the most reliable, dependency-free way to generate a proper PDF in-browser.
+ */
+function openPdfOfUpcoming(events: any[], calendarName: string) {
+  const today = new Date();
+  const upcoming = events.filter(ev => diffDays(today, ev.date) >= 0);
+  const fmtDate = (d: Date, withTime: boolean) => withTime ? `${formatHuman(d)} · ${formatTime(d)}` : formatHuman(d);
+  const daysToGo = (d: Date) => {
+    const n = diffDays(today, d);
+    if (n < 0) return `${Math.abs(n)} ${STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].overdue}`;
+    if (n === 0) return STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].today;
+    return `${n} ${STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].daysWord} ${STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].toGo}`;
+  };
+  const labelFor = (ev: any) => {
+    const t = STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"];
+    return ev.type === "treatment" ? t.treatment : (ev.type === "oneoff" ? (ev.item?.kind === "med" ? t.medication : t.appointment) : t.action);
+  };
+  const hasTime = (ev: any) => (ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time);
+
+  const rows = upcoming.map(ev => {
+    const name = ev.type === "treatment" ? `${STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].treatment} #${ev.index + 1}` : ev.title;
+    const notes = (ev.rule?.notes || ev.item?.notes || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    return `
+      <tr>
+        <td class="c-days">${daysToGo(ev.date)}</td>
+        <td class="c-date">${fmtDate(ev.date, hasTime(ev))}</td>
+        <td class="c-type">${labelFor(ev)}</td>
+        <td class="c-title">${name}</td>
+        <td class="c-notes">${notes || ""}</td>
+      </tr>`;
+  }).join("");
+
+  const html = `
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${calendarName} – Upcoming export</title>
+<style>
+  @page { size: A4; margin: 16mm; }
+  body { font: 12pt/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"; color: #0f172a; }
+  h1 { font-size: 20pt; margin: 0 0 10px 0; }
+  .meta { font-size: 10pt; color: #475569; margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }
+  th { font-size: 10pt; color: #475569; font-weight: 600; background: #f8fafc; }
+  td.c-days { white-space: nowrap; font-weight: 600; }
+  td.c-date { white-space: nowrap; color: #334155; }
+  td.c-type { white-space: nowrap; }
+  .footer { margin-top: 10px; font-size: 9pt; color: #64748b; }
+  .print-hint { margin-top: 6px; font-size: 9pt; color: #64748b; }
+</style>
+</head>
+<body>
+  <h1>${calendarName} — Upcoming</h1>
+  <div class="meta">Generated on ${formatHuman(new Date())}</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Days</th>
+        <th>Date</th>
+        <th>Type</th>
+        <th>Title</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="footer">Includes all future treatments, appointments, and medications from your current plan.</div>
+  <script>window.print();</script>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, "_blank");
+  // Cleanup when the window is closed
+  const timer = setInterval(() => {
+    if (w && w.closed) {
+      clearInterval(timer);
+      URL.revokeObjectURL(url);
+    }
+  }, 1000);
+}
 
 /******************** DOM safety ********************/
 function safeRemove(node: any){
@@ -422,33 +511,156 @@ function safeRemove(node: any){
 function GlobalStyles() {
   return (
     <style>{`
-      /* Polished, contained layout */
+      /* Neomorphic pink→grey matte background */
       html, body, #root { height: 100%; }
-      body { margin: 0; background: #f8fafc; color: #0f172a; }
-      .cc-app-shell { min-height: 100vh; background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%); }
+      /* ——— Background: soft blush-on-slate gradient + grain + vignette ——— */
+      :root{
+        --bg-1: #f1f5f9;           /* light slate */
+        --bg-2: #f8e7f1;           /* blush */
+        --bg-3: #eef2ff;           /* indigo tint */
+        --bg-4: #fafaf9;           /* warm paper */
+        --glow: rgba(255,182,193,0.28); /* pink glow */
+      }
+
+      body{
+        margin: 0;
+        color: #0f172a;
+        background:
+          /* soft corner glows */
+          radial-gradient(900px 600px at 12% 8%, var(--glow), transparent 60%),
+          radial-gradient(800px 500px at 88% 10%, rgba(147,197,253,0.18), transparent 62%),
+          /* main diagonal wash */
+          linear-gradient(135deg, var(--bg-2) 0%, var(--bg-4) 35%, var(--bg-1) 65%, var(--bg-3) 100%);
+        background-attachment: fixed;
+      }
+
+      /* subtle matte grain + vignette */
+      body::before{
+        content:"";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        /* grain */
+        background:
+          radial-gradient(1200px 900px at 50% 10%, rgba(255,255,255,.5), transparent 45%),
+          radial-gradient(1000px 900px at 50% 120%, rgba(0,0,0,.06), transparent 55%),
+          /* faux-noise using tiny dots */
+          radial-gradient(1px 1px at 10% 20%, rgba(0,0,0,.025) 50%, transparent 51%),
+          radial-gradient(1px 1px at 30% 80%, rgba(0,0,0,.02) 50%, transparent 51%),
+          radial-gradient(1px 1px at 70% 30%, rgba(0,0,0,.02) 50%, transparent 51%),
+          radial-gradient(1px 1px at 85% 60%, rgba(0,0,0,.02) 50%, transparent 51%);
+        background-size:
+          100% 100%,
+          100% 100%,
+          3px 3px,
+          3px 3px,
+          3px 3px,
+          3px 3px;
+        mix-blend-mode: soft-light;
+        opacity: .8;
+      }
+
+      /* ——— Make the language Select look like the buttons ——— */
+      [role="combobox"][aria-haspopup="listbox"]{
+        background: linear-gradient(180deg, #ffffff, #fafafa);
+        border: 1px solid rgba(2,6,23,0.10);
+        border-radius: 12px;
+        height: 40px;             /* aligns with your Button height */
+        padding: 0 12px;
+        box-shadow:
+          0 8px 18px rgba(31,41,55,0.08),
+          inset 0 -1px 0 rgba(255,255,255,0.65);
+        transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease;
+      }
+
+      /* Hover: lift slightly, deepen shadow */
+      [role="combobox"][aria-haspopup="listbox"]:hover{
+        transform: translateY(-1px);
+        box-shadow:
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(2,6,23,0.14);
+      }
+
+      /* Focus-visible ring to match shadcn focus */
+      [role="combobox"][aria-haspopup="listbox"]:focus-visible{
+        outline: none;
+        box-shadow:
+          0 0 0 3px rgba(59,130,246,0.25),
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(59,130,246,0.45);
+      }
+
+      /* Open state: keep it “pressed” */
+      [role="combobox"][aria-haspopup="listbox"][aria-expanded="true"]{
+        transform: translateY(0);
+        box-shadow:
+          0 6px 14px rgba(31,41,55,0.08),
+          inset 0 1px 0 rgba(0,0,0,0.04);
+      }
+
+      /* Make the dropdown panel feel consistent (optional but tiny) */
+      [data-radix-popper-content-wrapper] .radix-select-content,
+      [data-radix-popper-content-wrapper] [role="listbox"]{
+        background: linear-gradient(180deg, #ffffff, #f9fafb);
+        border: 1px solid rgba(2,6,23,0.08);
+        box-shadow: 0 18px 40px rgba(2,6,23,0.15);
+        backdrop-filter: blur(6px);
+      }
+
+
+      .cc-app-shell { min-height: 100vh; }
       .cc-container { width: 100%; max-width: 1080px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
       @media (max-width: 640px) {
         .cc-container { padding: 12px; }
       }
+
+      /* Fixed min width for chips */
+      .cc-chip{
+        display: inline-flex;          /* allows width to apply on inline element */
+        min-width: 90px;               /* your requirement */
+        justify-content: center;       /* keep the label centered */
+        align-items: center;           /* vertical alignment */
+      }
+
+
+      /* Neomorphic cards */
       .cc-card-pad { padding: 24px; }
       @media (max-width: 640px) { .cc-card-pad { padding: 16px; } }
-      .cc-tabs { position: sticky; top: 0; z-index: 20; background: #fff; border-radius: 14px; border: 1px solid rgba(2,6,23,0.06); padding: 6px; margin-bottom: 8px; }
-      @media (max-width: 640px) { .cc-tabs { position: static; top: auto; } }
+/* ——— Sticky tabs: glassier + crisper border ——— */
+.cc-tabs{
+  position: sticky; top: 0; z-index: 20;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.72));
+  backdrop-filter: blur(8px) saturate(120%);
+  border: 1px solid rgba(2,6,23,0.08);
+  padding: 6px; margin-bottom: 8px;
+  box-shadow:
+    12px 12px 24px rgba(210,175,189,0.30),
+    -10px -10px 22px rgba(255,255,255,0.75);
+}
+
+      /* Inputs/rows grid */
       .cc-rule-row { 
         display: grid; 
         gap: 0.75rem; 
         align-items: start; 
         position: relative;
-        overflow: hidden; /* keep icons inside rounded border */
+        overflow: hidden;
+        background: linear-gradient(180deg, #ffffff, #fafafa);
+        box-shadow: 9px 9px 18px rgba(210, 175, 189, 0.25), -9px -9px 18px rgba(255,255,255,0.9);
+        border-radius: 16px;
+        border: 1px solid rgba(2,6,23,0.06);
       }
       @media (min-width: 768px) {
         .cc-rule-row {
           grid-template-columns:
-            9.5rem                    /* Day/Date (WIDER for Chrome calendar picker) */
-            7.5rem                     /* Time */
-            minmax(0, 1.1fr)           /* Title */
-            minmax(0, 1fr)             /* Notes */
-            max-content;               /* Controls */
+            9.5rem
+            7.5rem
+            minmax(0, 1.1fr)
+            minmax(0, 1fr)
+            max-content;
         }
         .cc-rule-row .cc-controls { 
           padding-top: 26px; 
@@ -467,7 +679,42 @@ function GlobalStyles() {
       .cc-step { text-align: center; font-size: 12px; opacity: .7; }
       .cc-step.active { font-weight: 600; opacity: 1; }
       textarea { resize: vertical; max-height: 140px; }
-`}</style>
+      
+      /* ——— Make header buttons visually match the language Select ——— */
+      .cc-elevated{
+        background: linear-gradient(180deg, #ffffff, #fafafa);
+        border: 1px solid rgba(2,6,23,0.10);
+        border-radius: 12px;
+        height: 40px;                 /* same as SelectTrigger */
+        padding: 0 12px;               /* keep spacing consistent */
+        box-shadow:
+          0 8px 18px rgba(31,41,55,0.08),
+          inset 0 -1px 0 rgba(255,255,255,0.65);
+        transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease;
+      }
+
+      .cc-elevated:hover{
+        transform: translateY(-1px);
+        box-shadow:
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(2,6,23,0.14);
+      }
+
+      .cc-elevated:focus-visible{
+        outline: none;
+        box-shadow:
+          0 0 0 3px rgba(59,130,246,0.25),
+          0 10px 20px rgba(31,41,55,0.10),
+          inset 0 -1px 0 rgba(255,255,255,0.7);
+        border-color: rgba(59,130,246,0.45);
+      }
+
+      /* keep icon + text aligned nicely */
+      .cc-elevated svg{ width: 1rem; height: 1rem; margin-right: .5rem; }
+
+
+    `}</style>
   );
 }
 function DayInfo({ t }: { t: any }) {
@@ -590,19 +837,19 @@ function Header({ onReset }: { onReset: () => void }) {
       {!mobile ? (
         <div className="flex gap-2 items-center">
           <Dialog>
-            <DialogTrigger asChild><Button variant="outline"><Share2 className="w-4 h-4 mr-2" />{t.shareExport}</Button></DialogTrigger>
+            <DialogTrigger asChild><Button variant="outline" className="cc-elevated"><Share2 className="w-4 h-4 mr-2" />{t.shareExport}</Button></DialogTrigger>
             <DialogContent><DialogHeader><DialogTitle>{t.shareTitle}</DialogTitle></DialogHeader><SharePanel /></DialogContent>
           </Dialog>
 
           <Select value={locale} onValueChange={(v)=>changeLocale(v as LocaleKey)}>
-            <SelectTrigger className="w-[120px]"><SelectValue placeholder={t.language} /></SelectTrigger>
+            <SelectTrigger className="w-[120px] cc-elevated"><SelectValue placeholder={t.language} /></SelectTrigger>
             <SelectContent>
               <SelectItem value="en">{t.english}</SelectItem>
               <SelectItem value="nl">{t.dutch}</SelectItem>
             </SelectContent>
           </Select>
 
-          <Button variant="secondary" onClick={onReset}><Trash2 className="w-4 h-4 mr-2"/>{t.reset}</Button>
+          <Button variant="secondary" className="cc-elevated" onClick={onReset}><Trash2 className="w-4 h-4 mr-2"/>{t.reset}</Button>
         </div>
       ) : (
         <Sheet>
@@ -726,7 +973,7 @@ function SetupWizard({ onComplete, hideInlineImport = false }: { onComplete: (se
 
           <div className="space-y-2 mb-4">
             {medRules.map(rule => (
-              <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+              <div key={rule.id} className="cc-rule-row p-3">
                 <div>
                   <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
                   <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
@@ -857,7 +1104,7 @@ function WizardAddAppointments({ onFinish, onBack }: { onFinish: () => void; onB
 
         <div className="space-y-2 mb-3">
           {(vals.oneOffs || []).map((o:any) => (
-            <div key={o.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+            <div key={o.id} className="cc-rule-row p-3">
               <div>
                 <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].date}</Label>
                 <Input type="date" value={o.dateISO} onChange={e=>updateOneOff(o.id,{dateISO:e.target.value})}/>
@@ -1027,6 +1274,13 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
     return "bg-yellow-100";
   };
 
+  const daysToGoText = (d: Date) => {
+    const n = diffDays(today, d);
+    if (n < 0) return `${Math.abs(n)} ${t.overdue}`;
+    if (n === 0) return t.today;
+    return `${n} ${t.daysWord} ${t.toGo}`;
+  };
+
   return (
     <div className="grid lg:grid-cols-3 gap-4">
       <Card className="lg:col-span-1">
@@ -1034,15 +1288,10 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
           <h3 className="font-semibold mb-3">{t.nextAction}</h3>
           {nextActionEv ? (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={`p-4 rounded-2xl border ${isSameDay(nextActionEv.date, today) ? "bg-yellow-50" : "bg-gray-50"}`}>
-              <div className="text-sm opacity-70">
-                {isSameDay(nextActionEv.date, today) ? t.dueToday :
-                  `${Math.abs(daysUntil(nextActionEv.date))} ${t.daysWord} ${daysUntil(nextActionEv.date) < 0 ? t.overdue : t.toGo}`}
-              </div>
-              <div className="text-lg font-medium">{nextActionEv.title}</div>
+              <div className="text-sm font-semibold">{daysToGoText(nextActionEv.date)}</div>
+              <div className="text-sm opacity-80">{formatHuman(nextActionEv.date)}{nextActionEv.rule?.time ? ` · ${formatTime(nextActionEv.date)}` : ""}</div>
+              <div className="text-lg font-medium mt-1">{nextActionEv.title}</div>
               {nextActionEv.rule?.notes ? (<div className="text-xs opacity-70 mt-1 whitespace-pre-wrap">{nextActionEv.rule.notes}</div>) : null}
-              <div className="text-sm opacity-80">
-                {formatHuman(nextActionEv.date)}{nextActionEv.rule?.time ? ` · ${formatTime(nextActionEv.date)}` : ""}
-              </div>
             </motion.div>
           ) : <p className="opacity-70">-</p>}
         </CardContent>
@@ -1053,9 +1302,9 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
           <h3 className="font-semibold mb-3">{t.nextTreatment}</h3>
           {nextTreatmentEv ? (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={`p-4 rounded-2xl border ${isSameDay(nextTreatmentEv.date, today) ? "bg-green-50" : "bg-gray-50"}`}>
-              <div className="text-sm opacity-70">{isSameDay(nextTreatmentEv.date, today) ? t.today : `${daysUntil(nextTreatmentEv.date)} ${t.daysWord}`}</div>
-              <div className="text-lg font-medium">{`${t.treatment} #${nextTreatmentEv.index + 1}`}</div>
+              <div className="text-sm font-semibold">{daysToGoText(nextTreatmentEv.date)}</div>
               <div className="text-sm opacity-80">{formatHuman(nextTreatmentEv.date)}</div>
+              <div className="text-lg font-medium mt-1">{`${t.treatment} #${nextTreatmentEv.index + 1}`}</div>
             </motion.div>
           ) : <p className="opacity-70">-</p>}
         </CardContent>
@@ -1092,15 +1341,15 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
           </div>
           <div className="divide-y">
             {upcoming.map(ev => (
-              <div key={ev.id} className={`py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`}>
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs px-2 py-1 rounded-full border ${badgeColor(ev)}`}>{labelFor(ev)}</span>
+              <div key={ev.id} className={`py-3 flex items-start justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`}>
+                <div className="flex items-start gap-3">
+                  <span className={`cc-chip text-xs px-2 py-1 rounded-full border mt-1 ${badgeColor(ev)}`}>{labelFor(ev)}</span>
                   <div>
-                    <div className={`font-medium ${ev.type === 'action' && (done as any)[ev.id] ? 'line-through opacity-60' : ''}`}>
+                    {/* ORDER: Days to go → Date → Title → Notes */}
+                    <div className="text-sm font-semibold">{daysToGoText(ev.date)}</div>
+                    <div className="text-xs opacity-70">{formatHuman(ev.date)}{hasTime(ev) ? ` · ${formatTime(ev.date)}` : ""}{isSameDay(ev.date, today) ? ` · ${t.today}` : ""}</div>
+                    <div className={`mt-1 font-medium ${ev.type === 'action' && (done as any)[ev.id] ? 'line-through opacity-60' : ''}`}>
                       {ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title}
-                    </div>
-                    <div className="text-xs opacity-70">
-                      {formatHuman(ev.date)}{hasTime(ev) ? ` · ${formatTime(ev.date)}` : ""}{isSameDay(ev.date, today) ? ` · ${t.today}` : ""}
                     </div>
                     {ev.type === 'action' && ev.rule?.notes ? <div className="text-xs opacity-70 mt-1 whitespace-pre-wrap">{ev.rule.notes}</div> : null}
                     {ev.type === 'oneoff' && ev.item?.notes ? <div className="text-xs opacity-70 mt-1 whitespace-pre-wrap">{ev.item.notes}</div> : null}
@@ -1231,7 +1480,7 @@ function SharePanel() {
             <Label className="text-xs">{t.calendarNameLabel}</Label>
             <Input value={calendarName} onChange={(e)=>setCalendarName(e.target.value)} />
           </div>
-          <div className="flex gap-2 mt-3">
+          <div className="flex flex-wrap gap-2 mt-3">
             <Button onClick={() => {
               const ics = generateICS(events, { calendarName: calendarName?.trim() || "ChemoCare" });
               const safeName = (calendarName?.trim() || "ChemoCare").replace(/[^a-z0-9-_]+/gi,"_");
@@ -1239,7 +1488,12 @@ function SharePanel() {
             }}>
               <Download className="w-4 h-4 mr-2"/>{t.exportICS}
             </Button>
+            {/* NEW: Export PDF */}
+            <Button variant="outline" onClick={() => openPdfOfUpcoming(events, calendarName?.trim() || "ChemoCare")}>
+              <FileText className="w-4 h-4 mr-2" />{t.exportPDF}
+            </Button>
           </div>
+          <p className="text-xs opacity-70 mt-1">{t.exportPDFDesc}</p>
         </div>
 
         <div>
@@ -1260,7 +1514,7 @@ function SharePanel() {
         </div>
       </div>
 
-      <details className="rounded-lg border p-3">
+      <details className="rounded-lg border p-3 bg-white/70 backdrop-blur">
         <summary className="cursor-pointer font-medium">{t.howToImport}</summary>
         <ul className="list-disc ml-6 text-sm mt-2 space-y-1" dangerouslySetInnerHTML={{ __html: STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].outlookDesktop + STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].outlookWeb + STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].googleCal + STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].appleCal }} />
         <p className="text-xs opacity-70 mt-2">{t.subNote}</p>
@@ -1388,7 +1642,7 @@ function PlanEditor({ settings, onSaved }: { settings: any; onSaved: () => void 
 
       <div className="space-y-2">
         {vals.medRules.map((rule: any) => (
-          <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+          <div key={rule.id} className="cc-rule-row p-3">
             <div>
               <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
               <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
@@ -1409,7 +1663,7 @@ function PlanEditor({ settings, onSaved }: { settings: any; onSaved: () => void 
       <p className="text-xs opacity-70">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].oneOffsHelp}</p>
       <div className="space-y-2">
         {(vals.oneOffs || []).map((o:any) => (
-          <div key={o.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+          <div key={o.id} className="cc-rule-row p-3">
             <div>
               <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].date}</Label>
               <Input type="date" value={o.dateISO} onChange={e=>updateOneOff(o.id,{dateISO:e.target.value})}/>
@@ -1578,7 +1832,6 @@ function App() {
                   <QuickAddAppointment onAdded={refresh} />
                 </div>
                 <MonthCalendar events={events} />
-                {/* Move treatment handled via Home dialog or future enhancement */}
               </motion.div></TabsContent>
               <TabsContent value="plan"><motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}><Card><CardContent className="cc-card-pad"><PlanEditor settings={settings} onSaved={refresh} /></CardContent></Card></motion.div></TabsContent>
               <TabsContent value="share"><motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}><Card><CardContent className="cc-card-pad"><SharePanel /></CardContent></Card></motion.div></TabsContent>
