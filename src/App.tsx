@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload } from "lucide-react";
+import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload, Share2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { openDB } from "idb";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -22,6 +22,7 @@ import { createRoot } from "react-dom/client";
  * 1) "+ Add Appointment" quick-add button on Home (upcoming list header) AND Calendar tab toolbar.
  * 2) Extra step in first-launch wizard for adding additional appointments when creating a plan manually.
  * 3) Support naming the calendar when sharing (stored in settings, used in share bundle & ICS export).
+ * 4) BUGFIXES from user report.
  */
 
 /******************** Utilities ********************/
@@ -443,7 +444,7 @@ function GlobalStyles() {
       @media (min-width: 768px) {
         .cc-rule-row {
           grid-template-columns:
-            6.75rem                    /* Day/Date */
+            9.5rem                    /* Day/Date (WIDER for Chrome calendar picker) */
             7.5rem                     /* Time */
             minmax(0, 1.1fr)           /* Title */
             minmax(0, 1fr)             /* Notes */
@@ -589,7 +590,7 @@ function Header({ onReset }: { onReset: () => void }) {
       {!mobile ? (
         <div className="flex gap-2 items-center">
           <Dialog>
-            <DialogTrigger asChild><Button variant="outline">{t.shareExport}</Button></DialogTrigger>
+            <DialogTrigger asChild><Button variant="outline"><Share2 className="w-4 h-4 mr-2" />{t.shareExport}</Button></DialogTrigger>
             <DialogContent><DialogHeader><DialogTitle>{t.shareTitle}</DialogTitle></DialogHeader><SharePanel /></DialogContent>
           </Dialog>
 
@@ -649,6 +650,22 @@ function SetupWizard({ onComplete, hideInlineImport = false }: { onComplete: (se
     { id: crypto.randomUUID(), day: -1, title: "Day -1: premedication", notes: "", time: "", enabled: true },
     { id: crypto.randomUUID(), day: 2, title: "Day 2: post-medication", notes: "", time: "", enabled: true },
   ]);
+
+  // NEW: Prefill wizard with previously saved settings so coming back does not "lose" the plan
+  useEffect(() => {
+    (async () => {
+      const s = await loadSettings();
+      if (s) {
+        setStartDate(s.startDate || "");
+        setFrequencyDays(s.frequencyDays || 21);
+        setCycles(s.cycles ?? 6);
+        setCalendarName(s.calendarName || "ChemoCare");
+        if (Array.isArray(s.medRules) && s.medRules.length) {
+          setMedRules(s.medRules.map((r: any) => ({ ...r, day: normalizeDayInput(typeof r.day === "number" ? r.day : r.offset ?? 1) })));
+        }
+      }
+    })();
+  }, []);
 
   const addRule = () => setMedRules(r => [...r, { id: crypto.randomUUID(), day: 1, title: "Day 1: action", notes: "", time: "", enabled: true }]);
   const updateRule = (id: string, patch: any) => setMedRules(r => r.map(x => x.id === id ? { ...x, ...patch, day: normalizeDayInput(patch.day ?? x.day) } : x));
@@ -1002,6 +1019,14 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
   const labelFor = (ev: any) => ev.type === "treatment" ? t.treatment : (ev.type === "oneoff" ? (ev.item?.kind === "med" ? t.medication : t.appointment) : t.action);
   const hasTime = (ev: any) => (ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time);
 
+  const badgeColor = (ev: any) => {
+    if (ev.type === "treatment") return "bg-green-100";
+    if (ev.type === "action") return "bg-yellow-100";
+    if (ev.type === "oneoff" && ev.item?.kind === "med") return "bg-purple-100";
+    if (ev.type === "oneoff" && ev.item?.kind === "appointment") return "bg-blue-100";
+    return "bg-yellow-100";
+  };
+
   return (
     <div className="grid lg:grid-cols-3 gap-4">
       <Card className="lg:col-span-1">
@@ -1048,7 +1073,6 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
                 <DonutProgress pct={pct} />
                 <div>
                   <div className="text-lg font-medium">{t.progressPct(Math.round(pct * 100))}</div>
-                  <div className="text-sm opacity-70">{done} / {total}</div>
                   <div className="text-sm opacity-70">{done}/{total} {t.cyclesCompletedSuffix}</div>
                 </div>
               </div>
@@ -1070,7 +1094,7 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
             {upcoming.map(ev => (
               <div key={ev.id} className={`py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`}>
                 <div className="flex items-center gap-3">
-                  <span className={`text-xs px-2 py-1 rounded-full border ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"}`}>{labelFor(ev)}</span>
+                  <span className={`text-xs px-2 py-1 rounded-full border ${badgeColor(ev)}`}>{labelFor(ev)}</span>
                   <div>
                     <div className={`font-medium ${ev.type === 'action' && (done as any)[ev.id] ? 'line-through opacity-60' : ''}`}>
                       {ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title}
@@ -1265,6 +1289,14 @@ function MonthCalendar({ events }: { events: any[]; }) {
     return map;
   }, [events]);
 
+  const chipColor = (ev: any) => {
+    if (ev.type === "treatment") return "bg-green-100";
+    if (ev.type === "action") return "bg-yellow-100";
+    if (ev.type === "oneoff" && ev.item?.kind === "med") return "bg-purple-100";
+    if (ev.type === "oneoff" && ev.item?.kind === "appointment") return "bg-blue-100";
+    return "bg-yellow-100";
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -1284,7 +1316,7 @@ function MonthCalendar({ events }: { events: any[]; }) {
               <div className="text-xs mb-1 opacity-70">{day.getDate()}</div>
               <div className="space-y-1">
                 {evs.map((ev: any) => (
-                  <div key={ev.id} className={`text-[11px] px-2 py-1 rounded-full ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"} flex items-center justify-between gap-1`}>
+                  <div key={ev.id} className={`text-[11px] px-2 py-1 rounded-full ${chipColor(ev)} flex items-center justify-between gap-1`}>
                     <span className="truncate">
                       {ev.type === 'treatment'
                         ? `${t.treatment} #${ev.index + 1}`

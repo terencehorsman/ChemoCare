@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload } from "lucide-react";
+import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload, Share2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { openDB } from "idb";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -22,6 +22,7 @@ import { createRoot } from "react-dom/client";
  * 1) "+ Add Appointment" quick-add button on Home (upcoming list header) AND Calendar tab toolbar.
  * 2) Extra step in first-launch wizard for adding additional appointments when creating a plan manually.
  * 3) Support naming the calendar when sharing (stored in settings, used in share bundle & ICS export).
+ * 4) BUGFIXES from user report.
  */
 /******************** Utilities ********************/
 function toISODate(d) { const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate()); return dt.toISOString().slice(0, 10); }
@@ -470,7 +471,7 @@ function GlobalStyles() {
       @media (min-width: 768px) {
         .cc-rule-row {
           grid-template-columns:
-            6.75rem                    /* Day/Date */
+            9.5rem                    /* Day/Date (WIDER for Chrome calendar picker) */
             7.5rem                     /* Time */
             minmax(0, 1.1fr)           /* Title */
             minmax(0, 1fr)             /* Notes */
@@ -590,7 +591,7 @@ function decodeShare(code) {
 function Header({ onReset }) {
     const { locale, t, changeLocale } = useLocale();
     const mobile = useIsMobile();
-    return (_jsxs("div", { className: "w-full flex items-center justify-between mb-4", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx(CalendarIcon, { className: "w-6 h-6" }), _jsx("h1", { className: "text-2xl font-bold", children: t.appName })] }), !mobile ? (_jsxs("div", { className: "flex gap-2 items-center", children: [_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsx(Button, { variant: "outline", children: t.shareExport }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.shareTitle }) }), _jsx(SharePanel, {})] })] }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-[120px]", children: _jsx(SelectValue, { placeholder: t.language }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] }), _jsxs(Button, { variant: "secondary", onClick: onReset, children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })) : (_jsxs(Sheet, { children: [_jsx(SheetTrigger, { asChild: true, children: _jsx(Button, { variant: "outline", size: "icon", "aria-label": t.menu, children: _jsx(MenuIcon, { className: "w-5 h-5" }) }) }), _jsxs(SheetContent, { side: "bottom", className: "h-[80vh] overflow-auto", children: [_jsx(SheetHeader, { children: _jsx(SheetTitle, { children: t.menu }) }), _jsxs("div", { className: "mt-4 space-y-6", children: [_jsxs("section", { className: "space-y-3", children: [_jsx("h3", { className: "font-medium", children: t.shareTitle }), _jsx(SharePanel, {})] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: t.language }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-full", children: _jsx(SelectValue, {}) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] })] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: "Reset" }), _jsxs(Button, { variant: "secondary", onClick: onReset, className: "w-full", children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })] })] })] }))] }));
+    return (_jsxs("div", { className: "w-full flex items-center justify-between mb-4", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx(CalendarIcon, { className: "w-6 h-6" }), _jsx("h1", { className: "text-2xl font-bold", children: t.appName })] }), !mobile ? (_jsxs("div", { className: "flex gap-2 items-center", children: [_jsxs(Dialog, { children: [_jsx(DialogTrigger, { asChild: true, children: _jsxs(Button, { variant: "outline", children: [_jsx(Share2, { className: "w-4 h-4 mr-2" }), t.shareExport] }) }), _jsxs(DialogContent, { children: [_jsx(DialogHeader, { children: _jsx(DialogTitle, { children: t.shareTitle }) }), _jsx(SharePanel, {})] })] }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-[120px]", children: _jsx(SelectValue, { placeholder: t.language }) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] }), _jsxs(Button, { variant: "secondary", onClick: onReset, children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })) : (_jsxs(Sheet, { children: [_jsx(SheetTrigger, { asChild: true, children: _jsx(Button, { variant: "outline", size: "icon", "aria-label": t.menu, children: _jsx(MenuIcon, { className: "w-5 h-5" }) }) }), _jsxs(SheetContent, { side: "bottom", className: "h-[80vh] overflow-auto", children: [_jsx(SheetHeader, { children: _jsx(SheetTitle, { children: t.menu }) }), _jsxs("div", { className: "mt-4 space-y-6", children: [_jsxs("section", { className: "space-y-3", children: [_jsx("h3", { className: "font-medium", children: t.shareTitle }), _jsx(SharePanel, {})] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: t.language }), _jsxs(Select, { value: locale, onValueChange: (v) => changeLocale(v), children: [_jsx(SelectTrigger, { className: "w-full", children: _jsx(SelectValue, {}) }), _jsxs(SelectContent, { children: [_jsx(SelectItem, { value: "en", children: t.english }), _jsx(SelectItem, { value: "nl", children: t.dutch })] })] })] }), _jsxs("section", { className: "space-y-2", children: [_jsx("h3", { className: "font-medium", children: "Reset" }), _jsxs(Button, { variant: "secondary", onClick: onReset, className: "w-full", children: [_jsx(Trash2, { className: "w-4 h-4 mr-2" }), t.reset] })] })] })] })] }))] }));
 }
 /*** Setup Wizard (reused for Create path) ***/
 function SetupWizard({ onComplete, hideInlineImport = false }) {
@@ -603,6 +604,21 @@ function SetupWizard({ onComplete, hideInlineImport = false }) {
         { id: crypto.randomUUID(), day: -1, title: "Day -1: premedication", notes: "", time: "", enabled: true },
         { id: crypto.randomUUID(), day: 2, title: "Day 2: post-medication", notes: "", time: "", enabled: true },
     ]);
+    // NEW: Prefill wizard with previously saved settings so coming back does not "lose" the plan
+    useEffect(() => {
+        (async () => {
+            const s = await loadSettings();
+            if (s) {
+                setStartDate(s.startDate || "");
+                setFrequencyDays(s.frequencyDays || 21);
+                setCycles(s.cycles ?? 6);
+                setCalendarName(s.calendarName || "ChemoCare");
+                if (Array.isArray(s.medRules) && s.medRules.length) {
+                    setMedRules(s.medRules.map((r) => ({ ...r, day: normalizeDayInput(typeof r.day === "number" ? r.day : r.offset ?? 1) })));
+                }
+            }
+        })();
+    }, []);
     const addRule = () => setMedRules(r => [...r, { id: crypto.randomUUID(), day: 1, title: "Day 1: action", notes: "", time: "", enabled: true }]);
     const updateRule = (id, patch) => setMedRules(r => r.map(x => x.id === id ? { ...x, ...patch, day: normalizeDayInput(patch.day ?? x.day) } : x));
     const deleteRule = (id) => setMedRules(r => r.filter(x => x.id !== id));
@@ -751,12 +767,23 @@ function Home({ settings, moves, refresh }) {
     const upcoming = events.filter(ev => diffDays(today, ev.date) >= 0).slice(0, 12);
     const labelFor = (ev) => ev.type === "treatment" ? t.treatment : (ev.type === "oneoff" ? (ev.item?.kind === "med" ? t.medication : t.appointment) : t.action);
     const hasTime = (ev) => (ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time);
+    const badgeColor = (ev) => {
+        if (ev.type === "treatment")
+            return "bg-green-100";
+        if (ev.type === "action")
+            return "bg-yellow-100";
+        if (ev.type === "oneoff" && ev.item?.kind === "med")
+            return "bg-purple-100";
+        if (ev.type === "oneoff" && ev.item?.kind === "appointment")
+            return "bg-blue-100";
+        return "bg-yellow-100";
+    };
     return (_jsxs("div", { className: "grid lg:grid-cols-3 gap-4", children: [_jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextAction }), nextActionEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextActionEv.date, today) ? "bg-yellow-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm opacity-70", children: isSameDay(nextActionEv.date, today) ? t.dueToday :
                                         `${Math.abs(daysUntil(nextActionEv.date))} ${t.daysWord} ${daysUntil(nextActionEv.date) < 0 ? t.overdue : t.toGo}` }), _jsx("div", { className: "text-lg font-medium", children: nextActionEv.title }), nextActionEv.rule?.notes ? (_jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: nextActionEv.rule.notes })) : null, _jsxs("div", { className: "text-sm opacity-80", children: [formatHuman(nextActionEv.date), nextActionEv.rule?.time ? ` · ${formatTime(nextActionEv.date)}` : ""] })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.nextTreatment }), nextTreatmentEv ? (_jsxs(motion.div, { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, className: `p-4 rounded-2xl border ${isSameDay(nextTreatmentEv.date, today) ? "bg-green-50" : "bg-gray-50"}`, children: [_jsx("div", { className: "text-sm opacity-70", children: isSameDay(nextTreatmentEv.date, today) ? t.today : `${daysUntil(nextTreatmentEv.date)} ${t.daysWord}` }), _jsx("div", { className: "text-lg font-medium", children: `${t.treatment} #${nextTreatmentEv.index + 1}` }), _jsx("div", { className: "text-sm opacity-80", children: formatHuman(nextTreatmentEv.date) })] })) : _jsx("p", { className: "opacity-70", children: "-" })] }) }), _jsx(Card, { className: "lg:col-span-1", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsx("h3", { className: "font-semibold mb-3", children: t.courseProgress }), settings?.cycles ? (() => {
                             const { done, total } = countCompletedTreatments(settings, moves);
                             const pct = Math.max(0, Math.min(1, total ? done / total : 0));
-                            return (_jsxs("div", { className: "flex items-center gap-4", children: [_jsx(DonutProgress, { pct: pct }), _jsxs("div", { children: [_jsx("div", { className: "text-lg font-medium", children: t.progressPct(Math.round(pct * 100)) }), _jsxs("div", { className: "text-sm opacity-70", children: [done, " / ", total] }), _jsxs("div", { className: "text-sm opacity-70", children: [done, "/", total, " ", t.cyclesCompletedSuffix] })] })] }));
-                        })() : (_jsx("p", { className: "text-sm opacity-70", children: t.setCyclesHint }))] }) }), _jsx(Card, { className: "lg:col-span-3", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsxs("div", { className: "flex items-center justify-between mb-3", children: [_jsx("h3", { className: "font-semibold", children: t.upcoming }), _jsx(QuickAddAppointment, { onAdded: refresh })] }), _jsx("div", { className: "divide-y", children: upcoming.map(ev => (_jsxs("div", { className: `py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`, children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsx("span", { className: `text-xs px-2 py-1 rounded-full border ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"}`, children: labelFor(ev) }), _jsxs("div", { children: [_jsx("div", { className: `font-medium ${ev.type === 'action' && done[ev.id] ? 'line-through opacity-60' : ''}`, children: ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title }), _jsxs("div", { className: "text-xs opacity-70", children: [formatHuman(ev.date), hasTime(ev) ? ` · ${formatTime(ev.date)}` : "", isSameDay(ev.date, today) ? ` · ${t.today}` : ""] }), ev.type === 'action' && ev.rule?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.rule.notes }) : null, ev.type === 'oneoff' && ev.item?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.item.notes }) : null] })] }), _jsx("div", { className: "flex items-center gap-2", children: ev.type === 'action' && (_jsx(Checkbox, { checked: !!done[ev.id], onClick: (e) => { if (!done[ev.id]) {
+                            return (_jsxs("div", { className: "flex items-center gap-4", children: [_jsx(DonutProgress, { pct: pct }), _jsxs("div", { children: [_jsx("div", { className: "text-lg font-medium", children: t.progressPct(Math.round(pct * 100)) }), _jsxs("div", { className: "text-sm opacity-70", children: [done, "/", total, " ", t.cyclesCompletedSuffix] })] })] }));
+                        })() : (_jsx("p", { className: "text-sm opacity-70", children: t.setCyclesHint }))] }) }), _jsx(Card, { className: "lg:col-span-3", children: _jsxs(CardContent, { className: "cc-card-pad", children: [_jsxs("div", { className: "flex items-center justify-between mb-3", children: [_jsx("h3", { className: "font-semibold", children: t.upcoming }), _jsx(QuickAddAppointment, { onAdded: refresh })] }), _jsx("div", { className: "divide-y", children: upcoming.map(ev => (_jsxs("div", { className: `py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`, children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsx("span", { className: `text-xs px-2 py-1 rounded-full border ${badgeColor(ev)}`, children: labelFor(ev) }), _jsxs("div", { children: [_jsx("div", { className: `font-medium ${ev.type === 'action' && done[ev.id] ? 'line-through opacity-60' : ''}`, children: ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title }), _jsxs("div", { className: "text-xs opacity-70", children: [formatHuman(ev.date), hasTime(ev) ? ` · ${formatTime(ev.date)}` : "", isSameDay(ev.date, today) ? ` · ${t.today}` : ""] }), ev.type === 'action' && ev.rule?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.rule.notes }) : null, ev.type === 'oneoff' && ev.item?.notes ? _jsx("div", { className: "text-xs opacity-70 mt-1 whitespace-pre-wrap", children: ev.item.notes }) : null] })] }), _jsx("div", { className: "flex items-center gap-2", children: ev.type === 'action' && (_jsx(Checkbox, { checked: !!done[ev.id], onClick: (e) => { if (!done[ev.id]) {
                                                 fireConfettiAtClient(e.clientX, e.clientY);
                                             } }, onCheckedChange: (v) => toggleDone(ev.id, !!v) })) })] }, ev.id))) })] }) })] }));
 }
@@ -884,12 +911,23 @@ function MonthCalendar({ events }) {
             arr.sort((a, b) => a.type === b.type ? 0 : (a.type === "treatment" ? -1 : 1));
         return map;
     }, [events]);
+    const chipColor = (ev) => {
+        if (ev.type === "treatment")
+            return "bg-green-100";
+        if (ev.type === "action")
+            return "bg-yellow-100";
+        if (ev.type === "oneoff" && ev.item?.kind === "med")
+            return "bg-purple-100";
+        if (ev.type === "oneoff" && ev.item?.kind === "appointment")
+            return "bg-blue-100";
+        return "bg-yellow-100";
+    };
     return (_jsxs("div", { className: "space-y-3", children: [_jsxs("div", { className: "flex items-center justify-between", children: [_jsx(Button, { variant: "outline", onClick: () => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1)), children: t.prev }), _jsx("div", { className: "text-lg font-semibold", children: cursor.toLocaleDateString(undefined, { month: "long", year: "numeric" }) }), _jsx(Button, { variant: "outline", onClick: () => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)), children: t.next })] }), _jsxs("div", { className: "grid grid-cols-7 gap-1", children: [t.weekdays.map((d) => _jsx("div", { className: "text-xs text-center opacity-70 py-1", children: d }, d)), days.map((day, i) => {
                         const inMonth = day.getMonth() === cursor.getMonth();
                         const key = toISODate(day);
                         const evs = eventsByDay.get(key) || [];
                         const isToday = isSameDay(day, new Date());
-                        return (_jsxs("div", { className: `min-h-[100px] p-2 rounded-xl border ${inMonth ? "bg-white" : "bg-gray-100 opacity-70"} ${isToday ? "ring-2 ring-blue-400" : ""}`, children: [_jsx("div", { className: "text-xs mb-1 opacity-70", children: day.getDate() }), _jsx("div", { className: "space-y-1", children: evs.map((ev) => (_jsx("div", { className: `text-[11px] px-2 py-1 rounded-full ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"} flex items-center justify-between gap-1`, children: _jsx("span", { className: "truncate", children: ev.type === 'treatment'
+                        return (_jsxs("div", { className: `min-h-[100px] p-2 rounded-xl border ${inMonth ? "bg-white" : "bg-gray-100 opacity-70"} ${isToday ? "ring-2 ring-blue-400" : ""}`, children: [_jsx("div", { className: "text-xs mb-1 opacity-70", children: day.getDate() }), _jsx("div", { className: "space-y-1", children: evs.map((ev) => (_jsx("div", { className: `text-[11px] px-2 py-1 rounded-full ${chipColor(ev)} flex items-center justify-between gap-1`, children: _jsx("span", { className: "truncate", children: ev.type === 'treatment'
                                                 ? `${t.treatment} #${ev.index + 1}`
                                                 : `${ev.title}${((ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time)) ? ` · ${formatTime(ev.date)}` : ""}` }) }, ev.id))) })] }, i));
                     })] })] }));
