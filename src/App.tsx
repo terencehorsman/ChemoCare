@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar as CalendarIcon, Download, Edit, Share2, Plus, Trash2, MoveRight, Copy, Menu as MenuIcon } from "lucide-react";
+import { Calendar as CalendarIcon, Download, Plus, Trash2, Copy, Menu as MenuIcon, Upload } from "lucide-react";
 import { motion } from "framer-motion";
 import { openDB } from "idb";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -18,15 +18,10 @@ import { createRoot } from "react-dom/client";
 
 /**
  * ChemoCare – Offline-first web app for chemotherapy scheduling
- * - Hospital day counting only: Day 1 = treatment day, Day -1 = day before, Day 2 = day after. Day 0 is invalid.
- * - No backend. Uses IndexedDB for persistence.
- * - Configurable treatment plan: first date + frequency (days).
- * - Actions use a "day indicator" relative to treatment day (…,-1,1,2,…). Day 0 is blocked.
- * - Optional time per action; if set, creates timed event in .ics; otherwise all-day.
- * - Moving one treatment shifts all subsequent cycles by the frequency.
- * - Home shows days until next action/treatment + upcoming feed.
- * - Calendar month view + ability to move a treatment occurrence.
- * - Share: export .ics file for Outlook/Gmail/Apple.
+ * Added in this version (per request):
+ * 1) "+ Add Appointment" quick-add button on Home (upcoming list header) AND Calendar tab toolbar.
+ * 2) Extra step in first-launch wizard for adding additional appointments when creating a plan manually.
+ * 3) Support naming the calendar when sharing (stored in settings, used in share bundle & ICS export).
  */
 
 /******************** Utilities ********************/
@@ -41,15 +36,12 @@ function formatTime(d: Date) { return d.toLocaleTimeString([], { hour: "2-digit"
 function applyTime(date: Date, hhmm?: string) { if (!hhmm) return date; const [h, m] = hhmm.split(":").map(Number); const withTime = new Date(date); withTime.setHours(h||0, m||0, 0, 0); return withTime; }
 
 // --- Day helpers: treatment is Day 1 ---
-// UI "day indicator" -> offset relative to treatment (Day 1 -> 0, Day 2 -> +1, Day -1 -> -1)
 function dayToOffset(day: number) { return day >= 1 ? day - 1 : day; }
-// Normalize any user input; disallow Day 0 (snaps to Day 1)
 function normalizeDayInput(raw: any) {
   const n = Number.isFinite(raw) ? raw : parseInt(String(raw ?? ""), 10);
   if (isNaN(n)) return 1;
   return n === 0 ? 1 : n;
 }
-// Mobile detection
 function useIsMobile(bp = 768) {
   const [m, setM] = useState<boolean>(() => typeof window !== "undefined" ? window.innerWidth < bp : false);
   useEffect(() => { const onR = () => setM(window.innerWidth < bp); window.addEventListener("resize", onR); return () => window.removeEventListener("resize", onR); }, [bp]);
@@ -58,7 +50,7 @@ function useIsMobile(bp = 768) {
 
 /******************** IndexedDB ********************/
 const DB_NAME = "chemo-care-db";
-const DB_VERSION = 8; // add-action button restore + confetti + DayInput improvements
+const DB_VERSION = 12; // bumped for calendarName & wizard step
 let dbPromise: Promise<any> | undefined;
 async function getDB() {
   if (!dbPromise) {
@@ -94,7 +86,8 @@ const STRINGS = {
     firstDate: "First treatment date",
     frequency: "Frequency (days)",
     cycles: "Number of cycles (optional)",
-    medActions: "Medication & actions per cycle",
+    medActions: "Actions per cycle (around treatment days)",
+    medActionsHelp: "Use this for medication or tasks that repeat every cycle. Same-day meds? Add multiple actions with the same day.",
     dayHelpBtn: "Day help",
     dayHelpTitle: "How days work",
     dayExpl: "<p><b>Day 1</b> is the treatment day. <b>Day -1</b> is the day before. <b>Day 2</b> is the day after. Day 0 isn’t used.</p>",
@@ -106,6 +99,7 @@ const STRINGS = {
     addAction: "Add action",
     duplicateAction: "Duplicate",
     savePlan: "Save plan",
+    saved: "Saved!",
     nextAction: "Next action",
     dueToday: "Due today",
     daysWord: "day(s)",
@@ -113,10 +107,6 @@ const STRINGS = {
     toGo: "to go",
     nextTreatment: "Next treatment",
     today: "Today",
-    quickActions: "Quick actions",
-    editPlan: "Edit plan",
-    moveTreatment: "Move treatment…",
-    moveATreatment: "Move a treatment",
     upcoming: "Upcoming (next 12)",
     treatment: "Treatment",
     action: "Action",
@@ -138,10 +128,48 @@ const STRINGS = {
     tabs: { home: "Home", calendar: "Calendar", plan: "Plan", share: "Share" },
     weekdays: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],
     prev: "Prev", next: "Next",
-    editAffects: "Editing the plan now only affects <b>today and future</b> cycles; past cycles stay fixed.",
     cycleWord: (n:number)=>`Cycle ${n}`,
-    sameDayHint: "Tip: for multiple meds on one day, add multiple actions with the same day.",
     menu: "Menu",
+
+    courseProgress: "Course progress",
+    progressPct: (n:number)=>`${n}% complete`,
+    setCyclesHint: "Set the number of cycles to show progress.",
+    cyclesCompletedSuffix: "cycles completed",
+    oneOffsTitle: "Individual appointments & one-off meds",
+    oneOffsHelp: "Use this for physio, surgeon or oncology appointments, or single medications on a specific date/time.",
+    addOneOff: "Add item",
+    addAppointment: "Add appointment",
+    addMedication: "Add medication",
+    date: "Date",
+    type: "Type",
+    appointment: "Appointment",
+    medication: "Medication",
+    shareInApp: "Share within the app",
+    copyShareCode: "Copy share code",
+    pasteShareCode: "Paste code",
+    load: "Load",
+    downloadFile: "Download file",
+    uploadFile: "Upload file",
+    importSuccess: "Imported! Your plan has been loaded.",
+    importFail: "Couldn’t import that code/file.",
+    copied: "Copied!",
+    or: "or",
+    startFromShare: "Start from a share code or file",
+
+    // Wizard
+    welcome: "Welcome",
+    getStarted: "Get started",
+    choosePath: "How do you want to start?",
+    createPlan: "Create a plan",
+    startWithImport: "Start with Import",
+    back: "Back",
+    continue: "Continue",
+
+    // New: Calendar naming + quick add
+    calendarNameLabel: "Calendar name (for sharing/import)",
+    finish: "Finish",
+    addAppointmentsStep: "Add appointments",
+    quickAdd: "Quick add appointment",
   },
   nl: {
     appName: "ChemoCare",
@@ -156,7 +184,8 @@ const STRINGS = {
     firstDate: "Eerste behandelingsdatum",
     frequency: "Frequentie (dagen)",
     cycles: "Aantal cycli (optioneel)",
-    medActions: "Medicatie & acties per cyclus",
+    medActions: "Acties per cyclus (rond behandelingsdagen)",
+    medActionsHelp: "Gebruik dit voor medicatie of taken die elke cyclus terugkomen. Meerdere medicijnen op één dag? Voeg meerdere acties met dezelfde dag toe.",
     dayHelpBtn: "Uitleg dag",
     dayHelpTitle: "Hoe de dagen werken",
     dayExpl: "<p><b>Dag 1</b> is de dag van behandeling. <b>Dag -1</b> is de dag ervoor. <b>Dag 2</b> is de dag erna. Dag 0 gebruiken we niet.</p>",
@@ -168,6 +197,7 @@ const STRINGS = {
     addAction: "Actie toevoegen",
     duplicateAction: "Dupliceren",
     savePlan: "Plan opslaan",
+    saved: "Opgeslagen!",
     nextAction: "Volgende actie",
     dueToday: "Vandaag",
     daysWord: "dag(en)",
@@ -175,10 +205,6 @@ const STRINGS = {
     toGo: "te gaan",
     nextTreatment: "Volgende behandeling",
     today: "Vandaag",
-    quickActions: "Snelle acties",
-    editPlan: "Plan bewerken",
-    moveTreatment: "Behandeling verplaatsen…",
-    moveATreatment: "Een behandeling verplaatsen",
     upcoming: "Aankomend (volgende 12)",
     treatment: "Behandeling",
     action: "Actie",
@@ -200,15 +226,52 @@ const STRINGS = {
     tabs: { home: "Start", calendar: "Kalender", plan: "Plan", share: "Delen" },
     weekdays: ["Ma","Di","Wo","Do","Vr","Za","Zo"],
     prev: "Vorige", next: "Volgende",
-    editAffects: "Nu bewerken heeft alleen effect op <b>vandaag en toekomstige</b> cycli; eerdere cycli blijven vastgezet.",
     cycleWord: (n:number)=>`Cyclus ${n}`,
-    sameDayHint: "Tip: meerdere medicijnen op één dag? Voeg meerdere acties met dezelfde dag toe.",
     menu: "Menu",
+
+    courseProgress: "Voortgang traject",
+    progressPct: (n:number)=>`${n}% voltooid`,
+    setCyclesHint: "Stel het aantal cycli in om voortgang te tonen.",
+    cyclesCompletedSuffix: "kuren voltooid",
+    oneOffsTitle: "Aparte afspraken & losse medicatie",
+    oneOffsHelp: "Gebruik dit voor fysio, chirurg of oncologie-afspraken, of eenmalige medicatie op een specifieke datum/tijd.",
+    addOneOff: "Item toevoegen",
+    addAppointment: "Afspraak toevoegen",
+    addMedication: "Medicatie toevoegen",
+    date: "Datum",
+    type: "Type",
+    appointment: "Afspraak",
+    medication: "Medicatie",
+    shareInApp: "Delen via de app",
+    copyShareCode: "Deelcode kopiëren",
+    pasteShareCode: "Code plakken",
+    load: "Laden",
+    downloadFile: "Bestand downloaden",
+    uploadFile: "Bestand uploaden",
+    importSuccess: "Geïmporteerd! Je plan is geladen.",
+    importFail: "Importeren van code/bestand is mislukt.",
+    copied: "Gekopieerd!",
+    or: "of",
+    startFromShare: "Begin met een deelcode of bestand",
+
+    // Wizard
+    welcome: "Welkom",
+    getStarted: "Aan de slag",
+    choosePath: "Hoe wil je beginnen?",
+    createPlan: "Plan maken",
+    startWithImport: "Start met import",
+    back: "Terug",
+    continue: "Doorgaan",
+
+    // New
+    calendarNameLabel: "Agendanaam (voor delen/import)",
+    finish: "Afronden",
+    addAppointmentsStep: "Afspraken toevoegen",
+    quickAdd: "Snel afspraak toevoegen",
   }
 } as const;
 
 type LocaleKey = keyof typeof STRINGS;
-
 function useLocale() {
   const [locale, setLocale] = useState<LocaleKey>((localStorage.getItem("locale") as LocaleKey) || "nl");
   const t = STRINGS[locale];
@@ -229,7 +292,6 @@ function buildAnchors(startDateISO: string, frequencyDays: number, moves: { inde
   for (const a of anchors) { const last = dedup[dedup.length-1]; if (!last || last.index !== a.index) dedup.push(a); else dedup[dedup.length-1] = a; }
   return { anchors: dedup, frequencyDays };
 }
-
 function computeTreatmentDate(series: Series, occurrenceIndex: number) {
   const { anchors, frequencyDays } = series;
   let anchor = anchors[0];
@@ -237,7 +299,6 @@ function computeTreatmentDate(series: Series, occurrenceIndex: number) {
   const delta = occurrenceIndex - anchor.index;
   return addDays(anchor.date, delta * frequencyDays);
 }
-
 function* iterateTreatments(series: Series, { fromDate, toDate, maxCount = 1000, cyclesCap = null }: { fromDate?: Date; toDate?: Date; maxCount?: number; cyclesCap?: number | null } = {}) {
   const first = computeTreatmentDate(series, 0);
   let startIndex = 0;
@@ -252,7 +313,6 @@ function* iterateTreatments(series: Series, { fromDate, toDate, maxCount = 1000,
     count++; if (count >= maxCount) break;
   }
 }
-
 function buildEvents(settings: any, moves: any[], { monthsAhead = 12 } = {}) {
   if (!settings) return [] as any[];
   const now = new Date();
@@ -263,13 +323,11 @@ function buildEvents(settings: any, moves: any[], { monthsAhead = 12 } = {}) {
   const events: any[] = [];
 
   for (const { index, date } of iterateTreatments(series, { fromDate: windowStart, toDate: windowEnd, cyclesCap: settings.cycles ?? null })) {
-    // Treatment (Day 1)
     events.push({ id: `treat-${index}`, type: "treatment", title: `Treatment #${index + 1}`, date, index });
 
-    // Actions
     for (const rule of settings.medRules || []) {
       if (!rule.enabled && rule.enabled !== undefined) continue;
-      const offset = dayToOffset(rule.day); // day -> offset
+      const offset = dayToOffset(rule.day);
       const actionDate = addDays(date, offset);
       const actionDateTime = applyTime(actionDate, rule.time);
       events.push({
@@ -282,11 +340,25 @@ function buildEvents(settings: any, moves: any[], { monthsAhead = 12 } = {}) {
       });
     }
   }
+
+  // One-offs
+  for (const item of (settings.oneOffs || [])) {
+    const d = parseISODate(item.dateISO);
+    const dt = item.time ? applyTime(d, item.time) : d;
+    events.push({
+      id: `one-${item.id}`,
+      type: "oneoff",
+      title: item.title || (item.kind === "med" ? "Medication" : "Appointment"),
+      date: dt,
+      item,
+    });
+  }
+
   events.sort((a, b) => a.date - b.date || (a.type === "treatment" ? -1 : 1));
   return events;
 }
 
-/******************** Plan freeze helpers ********************/
+/******************** Helpers ********************/
 function mergeMoves(base: { index: number; newDateISO: string }[], add: { index: number; newDateISO: string }[]) {
   const m = new Map<number, string>(); for (const b of base) m.set(b.index, b.newDateISO); for (const a of add) m.set(a.index, a.newDateISO);
   return Array.from(m.entries()).map(([index, newDateISO]) => ({ index, newDateISO })).sort((x, y) => x.index - y.index);
@@ -299,29 +371,28 @@ function freezePastMoves(series: Series, cutoffDate: Date, cyclesCap: number | n
 }
 function daysUntil(date: Date) { const today = new Date(); return diffDays(today, date); }
 
-/******************** ICS Export ********************/
+/******************** ICS ********************/
 function toICSDate(d: Date) { return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`; }
 function toICSTime(d: Date) { return `${pad(d.getHours())}${pad(d.getMinutes())}00`; }
-
 function generateICS(events: any[], { calendarName = "ChemoCare" } = {}) {
   const t = STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"];
   const lines: string[] = ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//ChemoCare//EN",`X-WR-CALNAME:${calendarName}`];
   for (const ev of events) {
     const uid = `${ev.id}@chemocare.local`;
     const title = ev.type === "treatment" ? `${t.treatment} #${ev.index + 1}` : `${ev.title}`;
-    const desc = ev.type === "treatment" ? t.cycleWord(ev.index + 1) : (ev.rule?.notes || "");
+    const desc = ev.type === "treatment" ? t.cycleWord(ev.index + 1) : (ev.rule?.notes || ev.item?.notes || "");
     const stamp = `${toICSDate(new Date())}T000000Z`;
 
-    if (ev.type === "action" && ev.rule?.time) {
+    if ((ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time)) {
       const dt = ev.date as Date;
       const start = `${toICSDate(dt)}T${toICSTime(dt)}`;
       const endDt = new Date(dt.getTime()+60*60*1000); // 1h
       const end = `${toICSDate(endDt)}T${toICSTime(endDt)}`;
-      lines.push("BEGIN:VEVENT",`UID:${uid}`,`DTSTAMP:${stamp}`,`DTSTART:${start}`,`DTEND:${end}`,`SUMMARY:${title}`,`DESCRIPTION:${(desc||"").replace(/\n/g,"\\n")}`,"END:VEVENT");
+      lines.push("BEGIN:VEVENT",`UID:${uid}`,`DTSTAMP:${stamp}`,`DTSTART:${start}`,`DTEND:${end}`,`SUMMARY:${title}`,`DESCRIPTION:${(desc||"").replace(/\\n/g,"\\\\n")}`,"END:VEVENT");
     } else {
       const dtStart = toICSDate(ev.date);
       const dtEnd = toICSDate(addDays(ev.date, 1));
-      lines.push("BEGIN:VEVENT",`UID:${uid}`,`DTSTAMP:${stamp}`,`DTSTART;VALUE=DATE:${dtStart}`,`DTEND;VALUE=DATE:${dtEnd}`,`SUMMARY:${title}`,`DESCRIPTION:${(desc||"").replace(/\n/g,"\\n")}`,"END:VEVENT");
+      lines.push("BEGIN:VEVENT",`UID:${uid}`,`DTSTAMP:${stamp}`,`DTSTART;VALUE=DATE:${dtStart}`,`DTEND;VALUE=DATE:${dtEnd}`,`SUMMARY:${title}`,`DESCRIPTION:${(desc||"").replace(/\\n/g,"\\\\n")}`,"END:VEVENT");
     }
   }
   lines.push("END:VCALENDAR");
@@ -330,10 +401,74 @@ function generateICS(events: any[], { calendarName = "ChemoCare" } = {}) {
 function downloadICS(content: string, filename = "chemocare.ics") {
   const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob); const a = document.createElement("a");
-  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); safeRemove(a); URL.revokeObjectURL(url);
 }
 
+
+/******************** DOM safety ********************/
+function safeRemove(node: any){
+  try {
+    if (!node) return;
+    if (node.parentNode) {
+      node.parentNode.removeChild(node);
+    } else if (typeof node.remove === "function") {
+      try { node.remove(); } catch {}
+    }
+  } catch {}
+}
 /******************** UI Bits ********************/
+
+function GlobalStyles() {
+  return (
+    <style>{`
+      /* Polished, contained layout */
+      html, body, #root { height: 100%; }
+      body { margin: 0; background: #f8fafc; color: #0f172a; }
+      .cc-app-shell { min-height: 100vh; background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%); }
+      .cc-container { width: 100%; max-width: 1080px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
+      @media (max-width: 640px) {
+        .cc-container { padding: 12px; }
+      }
+      .cc-card-pad { padding: 24px; }
+      @media (max-width: 640px) { .cc-card-pad { padding: 16px; } }
+      .cc-tabs { position: sticky; top: 0; z-index: 20; background: #fff; border-radius: 14px; border: 1px solid rgba(2,6,23,0.06); padding: 6px; margin-bottom: 8px; }
+      @media (max-width: 640px) { .cc-tabs { position: static; top: auto; } }
+      .cc-rule-row { 
+        display: grid; 
+        gap: 0.75rem; 
+        align-items: start; 
+        position: relative;
+        overflow: hidden; /* keep icons inside rounded border */
+      }
+      @media (min-width: 768px) {
+        .cc-rule-row {
+          grid-template-columns:
+            6.75rem                    /* Day/Date */
+            7.5rem                     /* Time */
+            minmax(0, 1.1fr)           /* Title */
+            minmax(0, 1fr)             /* Notes */
+            max-content;               /* Controls */
+        }
+        .cc-rule-row .cc-controls { 
+          padding-top: 26px; 
+          justify-self: end;
+          display: inline-flex;
+          align-items: center;
+          gap: 0.25rem;
+          white-space: nowrap;
+        }
+      }
+      .cc-rule-row > * { min-width: 0; max-width: 100%; }
+      .cc-toast { position: fixed; right: 16px; bottom: 16px; z-index: 50; }
+      .cc-progress { height: 10px; border-radius: 9999px; background: rgba(2,6,23,0.08); overflow: hidden; }
+      .cc-progress > span { display: block; height: 100%; background: #22c55e; transition: width .25s ease; }
+      .cc-stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+      .cc-step { text-align: center; font-size: 12px; opacity: .7; }
+      .cc-step.active { font-weight: 600; opacity: 1; }
+      textarea { resize: vertical; max-height: 140px; }
+`}</style>
+  );
+}
 function DayInfo({ t }: { t: any }) {
   return (
     <Popover>
@@ -346,64 +481,26 @@ function DayInfo({ t }: { t: any }) {
     </Popover>
   );
 }
-
-function GlobalStyles() {
-  return (
-    <style>{`
-      /* Neat, consistent columns for action rows on md+ screens */
-      .cc-rule-row {
-        display: grid;
-        gap: 0.75rem;                 /* ~12px */
-        align-items: start;
-      }
-      @media (min-width: 768px) {
-        /* 5 columns: Day | Time | Title | Notes | Controls */
-        .cc-rule-row {
-          grid-template-columns:
-            7rem      /* Day */
-            8rem      /* Time */
-            minmax(14rem, 1fr)      /* Title */
-            minmax(18rem, 1.2fr)    /* Notes */
-            4.5rem;   /* Controls */
-        }
-      }
-      /* Prevent long text from blowing up column widths */
-      .cc-rule-row > * { min-width: 0; }
-
-      /* Tidy control column so buttons/checkbox align with inputs */
-      @media (min-width: 768px) {
-        .cc-rule-row .cc-controls { padding-top: 26px; }
-      }
-    `}</style>
-  );
-}
-
-
-/** DayInput: number field that *skips 0* but allows editing to "", "-" and then "-1" **/
 function DayInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
   const [text, setText] = useState<string>(String(value));
-  // sync external changes unless user is mid-entry "" or "-"
   useEffect(() => {
     const vstr = String(value);
     if (text !== vstr && text !== "" && text !== "-") setText(vstr);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  }, [value]); // eslint-disable-line
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let v = e.target.value;
-    if (v === "0" || v === "-0") v = "1"; // never let raw 0 exist
+    if (v === "0" || v === "-0") v = "1";
     setText(v);
     const n = Number(v);
     if (!Number.isNaN(n) && n !== 0) onChange(n);
   };
-
   const commit = () => {
     const n = Number(text);
     const normalized = (!Number.isNaN(n) ? (n === 0 ? 1 : n) : 1);
     setText(String(normalized));
     onChange(normalized);
   };
-
   return (
     <Input
       type="text"
@@ -418,8 +515,7 @@ function DayInput({ value, onChange }: { value: number; onChange: (n: number) =>
           const cur = Number.isNaN(Number(text)) ? value : Number(text) || 1;
           let next = (e as any).deltaY < 0 ? cur + 1 : cur - 1;
           if (next === 0) next += (e as any).deltaY < 0 ? 1 : -1;
-          setText(String(next));
-          onChange(next);
+          setText(String(next)); onChange(next);
         }
       }}
       onKeyDown={(e) => {
@@ -428,35 +524,57 @@ function DayInput({ value, onChange }: { value: number; onChange: (n: number) =>
           const cur = Number.isNaN(Number(text)) ? value : Number(text) || 1;
           let next = e.key === "ArrowUp" ? cur + 1 : cur - 1;
           if (next === 0) next += e.key === "ArrowUp" ? 1 : -1;
-          setText(String(next));
-          onChange(next);
+          setText(String(next)); onChange(next);
         }
-        if (e.key === "Enter") {
-          e.preventDefault();
-          commit();
-        }
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
       }}
     />
   );
 }
-
 function fireConfettiAtClient(clientX?: number, clientY?: number) {
   try {
     const x = clientX != null ? clientX / window.innerWidth : 0.5;
     const y = clientY != null ? clientY / window.innerHeight : 0.35;
-    confetti({
-      particleCount: 90,
-      spread: 65,
-      startVelocity: 40,
-      gravity: 0.9,
-      scalar: 1,
-      ticks: 160,
-      origin: { x, y },
-    });
+    confetti({ particleCount: 90, spread: 65, startVelocity: 40, gravity: 0.9, scalar: 1, ticks: 160, origin: { x, y } });
   } catch {}
 }
 
-/*** Header (desktop: buttons, mobile: collapsed menu) ***/
+/* Progress donut */
+function DonutProgress({ pct }: { pct: number }) {
+  const r = 36; const c = 2 * Math.PI * r; const off = c * (1 - pct);
+  return (
+    <svg viewBox="0 0 100 100" className="w-28 h-28">
+      <circle cx="50" cy="50" r={r} fill="none" stroke="rgba(0,0,0,0.08)" strokeWidth="12" />
+      <circle cx="50" cy="50" r={r} fill="none" stroke="rgb(34,197,94)" strokeWidth="12" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={off} transform="rotate(-90 50 50)" />
+      <text x="50" y="54" textAnchor="middle" className="text-sm fill-current">{Math.round(pct*100)}%</text>
+    </svg>
+  );
+}
+function countCompletedTreatments(settings: any, moves: any[], asOf = new Date()) {
+  if (!settings) return { done: 0, total: 0 };
+  const series = buildAnchors(settings.startDate, settings.frequencyDays, moves);
+  let i = 0, done = 0;
+  const cap = settings.cycles ?? 9999;
+  while (i < cap) {
+    const d = computeTreatmentDate(series, i);
+    if (d <= asOf) done++;
+    else break;
+    i++;
+  }
+  return { done, total: settings.cycles ?? 0 };
+}
+
+/* Share encode/decode */
+function encodeShare(obj: any) {
+  const json = JSON.stringify(obj);
+  return btoa(unescape(encodeURIComponent(json)));
+}
+function decodeShare(code: string) {
+  const json = decodeURIComponent(escape(atob(code)));
+  return JSON.parse(json);
+}
+
+/*** Header ***/
 function Header({ onReset }: { onReset: () => void }) {
   const { locale, t, changeLocale } = useLocale();
   const mobile = useIsMobile();
@@ -471,7 +589,7 @@ function Header({ onReset }: { onReset: () => void }) {
       {!mobile ? (
         <div className="flex gap-2 items-center">
           <Dialog>
-            <DialogTrigger asChild><Button variant="outline"><Share2 className="w-4 h-4 mr-2"/>{t.shareExport}</Button></DialogTrigger>
+            <DialogTrigger asChild><Button variant="outline">{t.shareExport}</Button></DialogTrigger>
             <DialogContent><DialogHeader><DialogTitle>{t.shareTitle}</DialogTitle></DialogHeader><SharePanel /></DialogContent>
           </Dialog>
 
@@ -520,81 +638,350 @@ function Header({ onReset }: { onReset: () => void }) {
   );
 }
 
-<GlobalStyles />
-
-/*** Setup Wizard ***/
-function SetupWizard({ onComplete }: { onComplete: (settings: any) => void }) {
+/*** Setup Wizard (reused for Create path) ***/
+function SetupWizard({ onComplete, hideInlineImport = false }: { onComplete: (settings: any) => void; hideInlineImport?: boolean }) {
   const { t } = useLocale();
   const [startDate, setStartDate] = useState("");
   const [frequencyDays, setFrequencyDays] = useState(21);
   const [cycles, setCycles] = useState<any>(6);
+  const [calendarName, setCalendarName] = useState<string>("ChemoCare"); // NEW: calendar name
   const [medRules, setMedRules] = useState([
-    { id: crypto.randomUUID(), day: -1, title: "Dag -1: premedicatie", notes: "", time: "", enabled: true },
-    { id: crypto.randomUUID(), day: 2, title: "Dag 2: nabehandeling", notes: "", time: "", enabled: true },
+    { id: crypto.randomUUID(), day: -1, title: "Day -1: premedication", notes: "", time: "", enabled: true },
+    { id: crypto.randomUUID(), day: 2, title: "Day 2: post-medication", notes: "", time: "", enabled: true },
   ]);
 
-  const addRule = () => setMedRules(r => [...r, { id: crypto.randomUUID(), day: 1, title: "Dag 1: actie", notes: "", time: "", enabled: true }]);
+  const addRule = () => setMedRules(r => [...r, { id: crypto.randomUUID(), day: 1, title: "Day 1: action", notes: "", time: "", enabled: true }]);
   const updateRule = (id: string, patch: any) => setMedRules(r => r.map(x => x.id === id ? { ...x, ...patch, day: normalizeDayInput(patch.day ?? x.day) } : x));
   const deleteRule = (id: string) => setMedRules(r => r.filter(x => x.id !== id));
   const duplicateRule = (rule: any) => setMedRules(r => [...r, { ...rule, id: crypto.randomUUID() }]);
 
   const canSave = startDate && frequencyDays >= 1;
 
+  // Inline import (optional if not hidden)
+  const importRef = useRef<HTMLInputElement>(null);
+  const [shareCode, setShareCode] = useState("");
+
+  const importFromCode = async () => {
+    try {
+      const bundle = decodeShare(shareCode.trim());
+      if (!bundle?.settings) throw new Error("bad");
+      await saveSettings(bundle.settings);
+      await saveMoves(bundle.moves || []);
+      onComplete(bundle.settings);
+    } catch { alert(t.importFail); }
+  };
+  const importFromFile = async (file?: File) => {
+    try {
+      if (!file) return;
+      const txt = await file.text();
+      const bundle = JSON.parse(txt);
+      await saveSettings(bundle.settings);
+      await saveMoves(bundle.moves || []);
+      onComplete(bundle.settings);
+    } catch { alert(t.importFail); }
+  };
+
+  return (
+    <div className="grid gap-6">
+      <Card className="max-w-3xl mx-auto">
+        <CardContent className="cc-card-pad">
+          <h2 className="text-xl font-semibold mb-2">{t.setupTitle}</h2>
+          <p className="text-sm opacity-80 mb-4" dangerouslySetInnerHTML={{ __html: t.setupHelp }} />
+
+          <div className="grid md:grid-cols-3 gap-4 mb-6">
+            <div><Label>{t.firstDate}</Label><Input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
+            <div><Label>{t.frequency}</Label><Input type="number" step={1} min={1} value={frequencyDays} onChange={e => setFrequencyDays(parseInt(e.target.value || "0", 10))} /></div>
+            <div><Label>{t.cycles}</Label><Input type="number" step={1} min={1} value={cycles} onChange={e => setCycles(e.target.value === "" ? "" : parseInt(e.target.value, 10))} /></div>
+          </div>
+
+          <div className="mb-6">
+            <Label>{t.calendarNameLabel}</Label>
+            <Input value={calendarName} onChange={(e)=>setCalendarName(e.target.value)} />
+          </div>
+
+          <div className="flex items-center justify-between mb-1">
+            <div>
+              <h3 className="font-medium">{t.medActions}</h3>
+              <p className="text-xs opacity-70">{t.medActionsHelp}</p>
+            </div>
+            <Button variant="outline" onClick={addRule}><Plus className="w-4 h-4 mr-2"/>{t.addAction}</Button>
+          </div>
+
+          <div className="space-y-2 mb-4">
+            {medRules.map(rule => (
+              <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+                <div>
+                  <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
+                  <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
+                </div>
+                <div><Label className="text-xs">{t.timeOfDay}</Label><Input type="time" value={rule.time || ""} onChange={e => updateRule(rule.id, { time: e.target.value })} /></div>
+                <div><Label className="text-xs">{t.title}</Label><Input value={rule.title} onChange={e => updateRule(rule.id, { title: e.target.value })} /></div>
+                <div><Label className="text-xs">{t.notesOpt}</Label><Textarea rows={2} value={rule.notes} onChange={e => updateRule(rule.id, { notes: e.target.value })} /></div>
+                <div className="cc-controls flex items-center gap-2">
+                  <Checkbox checked={rule.enabled} onCheckedChange={v => updateRule(rule.id, { enabled: !!v })} />
+                  <Button size="icon" variant="ghost" onClick={() => duplicateRule(rule)} title={t.duplicateAction}><Copy className="w-4 h-4"/></Button>
+                  <Button size="icon" variant="ghost" onClick={() => deleteRule(rule.id)}><Trash2 className="w-4 h-4"/></Button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-end">
+            <Button disabled={!canSave} onClick={async () => {
+              const settings = {
+                startDate,
+                frequencyDays,
+                cycles: cycles === "" ? null : cycles,
+                medRules: medRules.map(m => ({ ...m, day: normalizeDayInput(m.day) })),
+                oneOffs: [],
+                calendarName: calendarName?.trim() || "ChemoCare",
+              };
+              await saveSettings(settings);
+              await saveMoves([]);
+              onComplete(settings);
+            }}>{t.savePlan}</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {!hideInlineImport && (
+        <Card className="max-w-3xl mx-auto">
+          <CardContent className="cc-card-pad">
+            <h3 className="font-medium mb-2">{t.startFromShare}</h3>
+            <div className="flex flex-wrap gap-2 mb-3">
+              <Button variant="outline" onClick={() => importRef.current?.click()}><Upload className="w-4 h-4 mr-2" />{t.uploadFile}</Button>
+              <input ref={importRef} type="file" accept="application/json" className="hidden" onChange={(e)=>importFromFile(e.target.files?.[0]||undefined)} />
+            </div>
+            <Label className="text-xs">{t.pasteShareCode}</Label>
+            <Textarea rows={3} value={shareCode} onChange={(e)=>setShareCode(e.target.value)} />
+            <div className="mt-2">
+              <Button onClick={importFromCode}>{t.load}</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/*** Import-only panel (wizard Import path) ***/
+function ImportPanel({ onComplete }: { onComplete: (settings: any) => void }) {
+  const { t } = useLocale();
+  const [code, setCode] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const loadFromCode = async () => {
+    try {
+      const bundle = decodeShare(code.trim());
+      if (!bundle?.settings) throw new Error("bad");
+      await saveSettings(bundle.settings);
+      await saveMoves(bundle.moves || []);
+      alert(t.importSuccess);
+      onComplete(bundle.settings);
+    } catch { alert(t.importFail); }
+  };
+  const uploadJson = async (file?: File) => {
+    try {
+      if (!file) return;
+      const txt = await file.text();
+      const bundle = JSON.parse(txt);
+      await saveSettings(bundle.settings);
+      await saveMoves(bundle.moves||[]);
+      alert(t.importSuccess);
+      onComplete(bundle.settings);
+    } catch { alert(t.importFail); }
+  };
+
   return (
     <Card className="max-w-3xl mx-auto">
-      <CardContent className="p-6">
-        <h2 className="text-xl font-semibold mb-2">{t.setupTitle}</h2>
-        <p className="text-sm opacity-80 mb-4" dangerouslySetInnerHTML={{ __html: t.setupHelp }} />
-
-        <div className="grid md:grid-cols-3 gap-4 mb-6">
-          <div><Label>{t.firstDate}</Label><Input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
-          <div><Label>{t.frequency}</Label><Input type="number" step={1} min={1} value={frequencyDays} onChange={e => setFrequencyDays(parseInt(e.target.value || "0", 10))} /></div>
-          <div><Label>{t.cycles}</Label><Input type="number" step={1} min={1} value={cycles} onChange={e => setCycles(e.target.value === "" ? "" : parseInt(e.target.value, 10))} /></div>
+      <CardContent className="cc-card-pad">
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={()=>fileRef.current?.click()}><Upload className="w-4 h-4 mr-2" />{t.uploadFile}</Button>
+            <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={(e)=>uploadJson(e.target.files?.[0]||undefined)} />
+          </div>
+          <div>
+            <Label className="text-xs">{t.pasteShareCode}</Label>
+            <Textarea rows={3} value={code} onChange={(e)=>setCode(e.target.value)} />
+            <div className="mt-2">
+              <Button onClick={loadFromCode}>{t.load}</Button>
+            </div>
+          </div>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
 
-        <h3 className="font-medium mb-2">{t.medActions}</h3>
-        <p className="text-xs opacity-70 mb-2">{t.sameDayHint}</p>
+/*** Add Appointments Step for Wizard ***/
+function WizardAddAppointments({ onFinish, onBack }: { onFinish: () => void; onBack: () => void }) {
+  const { t } = useLocale();
+  const [vals, setVals] = useState<any>(null);
 
-        <div className="space-y-2 mb-4">
-          {medRules.map(rule => (
-              <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
-              <div className="md:col-span-2">
-                <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
-                <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
+  useEffect(() => {
+    (async () => {
+      const s = await loadSettings();
+      setVals(s ? { ...s, oneOffs: Array.isArray(s.oneOffs) ? s.oneOffs : [] } : null);
+    })();
+  }, []);
+
+  const updateOneOff = (id: string, patch: any) => setVals((v:any)=>({ ...v, oneOffs: (v.oneOffs||[]).map((o:any)=>o.id===id?{...o,...patch}:o) }));
+  const addOneOff = () => setVals((v:any)=>({ ...v, oneOffs: [...(v.oneOffs||[]), { id: crypto.randomUUID(), dateISO: "", time: "", title: "", notes: "", kind: "appointment" }] }));
+  const deleteOneOff = (id: string) => setVals((v:any)=>({ ...v, oneOffs: (v.oneOffs||[]).filter((o:any)=>o.id!==id) }));
+
+  if (!vals) return <Card className="max-w-3xl mx-auto"><CardContent className="cc-card-pad">{t.preparing}</CardContent></Card>;
+
+  return (
+    <Card className="max-w-3xl mx-auto">
+      <CardContent className="cc-card-pad">
+        <div className="mb-3"><Button variant="outline" onClick={onBack}>{t.back}</Button></div>
+        <h3 className="font-medium mb-1">{t.addAppointmentsStep}</h3>
+        <p className="text-xs opacity-70 mb-3">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].oneOffsHelp}</p>
+
+        <div className="space-y-2 mb-3">
+          {(vals.oneOffs || []).map((o:any) => (
+            <div key={o.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+              <div>
+                <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].date}</Label>
+                <Input type="date" value={o.dateISO} onChange={e=>updateOneOff(o.id,{dateISO:e.target.value})}/>
               </div>
-              <div className="md:col-span-2"><Label className="text-xs">{t.timeOfDay}</Label><Input type="time" value={rule.time || ""} onChange={e => updateRule(rule.id, { time: e.target.value })} /></div>
-              <div className="md:col-span-3"><Label className="text-xs">{t.title}</Label><Input value={rule.title} onChange={e => updateRule(rule.id, { title: e.target.value })} /></div>
-              <div className="md:col-span-4"><Label className="text-xs">{t.notesOpt}</Label><Textarea rows={2} value={rule.notes} onChange={e => updateRule(rule.id, { notes: e.target.value })} /></div>
+              <div>
+                <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].timeOfDay}</Label>
+                <Input type="time" value={o.time||""} onChange={e=>updateOneOff(o.id,{time:e.target.value})}/>
+              </div>
+              <div>
+                <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].title}</Label>
+                <Input value={o.title} onChange={e=>updateOneOff(o.id,{title:e.target.value})}/>
+              </div>
+              <div>
+                <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].notes}</Label>
+                <Textarea rows={2} value={o.notes||""} onChange={e=>updateOneOff(o.id,{notes:e.target.value})}/>
+              </div>
               <div className="cc-controls flex items-center gap-2">
-                <Checkbox checked={rule.enabled} onCheckedChange={v => updateRule(rule.id, { enabled: !!v })} />
-                <Button size="icon" variant="ghost" onClick={() => duplicateRule(rule)} title={t.duplicateAction}><Copy className="w-4 h-4"/></Button>
-                <Button size="icon" variant="ghost" onClick={() => deleteRule(rule.id)}><Trash2 className="w-4 h-4"/></Button>
+                <Select value={o.kind} onValueChange={(v)=>updateOneOff(o.id,{kind:v})}>
+                  <SelectTrigger className="w-[120px]"><SelectValue placeholder={STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].type}/></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="appointment">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].appointment}</SelectItem>
+                    <SelectItem value="med">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].medication}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button size="icon" variant="ghost" onClick={()=>deleteOneOff(o.id)}><Trash2 className="w-4 h-4"/></Button>
               </div>
             </div>
           ))}
         </div>
-
-        {/* >>> RESTORED Add Action button on setup <<< */}
-        <div className="flex justify-between mb-2">
-          <Button variant="outline" onClick={addRule}><Plus className="w-4 h-4 mr-2"/>{t.addAction}</Button>
-          <div />
+        <div className="flex flex-wrap gap-2 mb-4">
+          <Button variant="outline" onClick={addOneOff}><Plus className="w-4 h-4 mr-2"/>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].addAppointment}</Button>
+          <Button variant="outline" onClick={()=>setVals((v:any)=>({ ...v, oneOffs: [...(v.oneOffs||[]), { id: crypto.randomUUID(), dateISO: "", time: "", title: "", notes: "", kind: "med" }] }))}><Plus className="w-4 h-4 mr-2"/>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].addMedication}</Button>
         </div>
 
         <div className="flex justify-end">
-          <Button disabled={!canSave} onClick={async () => {
-            const settings = {
-              startDate,
-              frequencyDays,
-              cycles: cycles === "" ? null : cycles,
-              medRules: medRules.map(m => ({ ...m, day: normalizeDayInput(m.day) })), // enforce no 0
-            };
-            await saveSettings(settings);
-            await saveMoves([]);
-            onComplete(settings);
-          }}>{t.savePlan}</Button>
+          <Button onClick={async ()=>{ await saveSettings(vals); onFinish(); }}>{t.finish}</Button>
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/*** First-launch Wizard wrapper ***/
+function FirstLaunchWizard({ onDone, onReset }: { onDone: () => void; onReset: () => void }) {
+  const { t } = useLocale();
+  // Steps: 0 choose path, 1 create, 2 add-appointments (if create path), 3 import
+  const [step, setStep] = useState<0|1|2|3>(0);
+  const [inCreateFlow, setInCreateFlow] = useState(false);
+  const totalSteps = 4;
+  const pct = ((step + 1) / totalSteps) * 100;
+
+  return (
+    <div className="cc-app-shell">
+      <div className="cc-container">
+        <Header onReset={onReset} />
+        <GlobalStyles />
+        <div className="max-w-3xl mx-auto space-y-4">
+          <Card>
+            <CardContent className="cc-card-pad">
+              <div className="mb-3">
+                <div className="cc-progress"><span style={{ width: pct + '%' }} /></div>
+                <div className="cc-stepper mt-2">
+                  <div className={`cc-step ${step===0?'active':''}`}>{t.welcome}</div>
+                  <div className={`cc-step ${step===1?'active':''}`}>{t.createPlan}</div>
+                  <div className={`cc-step ${step===2?'active':''}`}>{t.addAppointmentsStep}</div>
+                  <div className={`cc-step ${step===3?'active':''}`}>{t.startWithImport}</div>
+                </div>
+              </div>
+
+              {step === 0 && (<motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}>
+                <div className="text-center">
+                  <h2 className="text-2xl font-semibold mb-1">{t.getStarted}</h2>
+                  <p className="text-sm opacity-70 mb-4">{t.choosePath}</p>
+                  <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                    <Button onClick={()=>{ setStep(1); setInCreateFlow(true); }}>{t.createPlan}</Button>
+                    <Button variant="outline" onClick={()=>{ setStep(3); setInCreateFlow(false); }}>{t.startWithImport}</Button>
+                  </div>
+                </div>
+              </motion.div>)}
+
+              {step === 1 && (<motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}>
+                <div>
+                  <div className="mb-3"><Button variant="outline" onClick={()=>setStep(0)}>{t.back}</Button></div>
+                  <SetupWizard hideInlineImport onComplete={()=> setStep(2)} />
+                </div>
+              </motion.div>)}
+
+              {step === 2 && inCreateFlow && (<motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}>
+                <WizardAddAppointments onBack={()=>setStep(1)} onFinish={()=>onDone()} />
+              </motion.div>)}
+
+              {step === 3 && (<motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}>
+                <div>
+                  <div className="mb-3"><Button variant="outline" onClick={()=>setStep(0)}>{t.back}</Button></div>
+                  <ImportPanel onComplete={()=>onDone()} />
+                </div>
+              </motion.div>)}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/*** Quick Add Appointment modal (reusable) ***/
+function QuickAddAppointment({ onAdded }: { onAdded: () => void }) {
+  const { t } = useLocale();
+  const [open, setOpen] = useState(false);
+  const [dateISO, setDateISO] = useState<string>(toISODate(new Date()));
+  const [time, setTime] = useState<string>("");
+  const [title, setTitle] = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
+
+  const save = async () => {
+    const s = await loadSettings();
+    if (!s) return;
+    const oneOffs = Array.isArray(s.oneOffs) ? s.oneOffs : [];
+    oneOffs.push({ id: crypto.randomUUID(), dateISO, time, title: title || STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].appointment, notes, kind: "appointment" });
+    await saveSettings({ ...s, oneOffs });
+    setOpen(false);
+    setTitle(""); setNotes(""); setTime("");
+    onAdded();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline"><Plus className="w-4 h-4 mr-2"/>{t.addAppointment}</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t.quickAdd}</DialogTitle></DialogHeader>
+        <div className="grid gap-3">
+          <div><Label>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].date}</Label><Input type="date" value={dateISO} onChange={e=>setDateISO(e.target.value)} /></div>
+          <div><Label>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].timeOfDay}</Label><Input type="time" value={time} onChange={e=>setTime(e.target.value)} /></div>
+          <div><Label>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].title}</Label><Input value={title} onChange={e=>setTitle(e.target.value)} placeholder={STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].appointment} /></div>
+          <div><Label>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].notes}</Label><Textarea rows={3} value={notes} onChange={e=>setNotes(e.target.value)} /></div>
+          <div className="flex justify-end"><Button onClick={save}>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].addAppointment}</Button></div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -608,19 +995,17 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
 
   const [done, setDone] = useState<Record<string, boolean>>({});
   useEffect(() => { (async () => setDone(await loadDone()))(); }, [settings, moves]);
-
-  const toggleDone = async (id: string, val: boolean) => {
-    const d = { ...done, [id]: val };
-    await saveDone(d);
-    setDone(d);
-  };
+  const toggleDone = async (id: string, val: boolean) => { const d = { ...done, [id]: val }; await saveDone(d); setDone(d); };
 
   const upcoming = events.filter(ev => diffDays(today, ev.date) >= 0).slice(0, 12);
+
+  const labelFor = (ev: any) => ev.type === "treatment" ? t.treatment : (ev.type === "oneoff" ? (ev.item?.kind === "med" ? t.medication : t.appointment) : t.action);
+  const hasTime = (ev: any) => (ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time);
 
   return (
     <div className="grid lg:grid-cols-3 gap-4">
       <Card className="lg:col-span-1">
-        <CardContent className="p-6">
+        <CardContent className="cc-card-pad">
           <h3 className="font-semibold mb-3">{t.nextAction}</h3>
           {nextActionEv ? (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={`p-4 rounded-2xl border ${isSameDay(nextActionEv.date, today) ? "bg-yellow-50" : "bg-gray-50"}`}>
@@ -639,7 +1024,7 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
       </Card>
 
       <Card className="lg:col-span-1">
-        <CardContent className="p-6">
+        <CardContent className="cc-card-pad">
           <h3 className="font-semibold mb-3">{t.nextTreatment}</h3>
           {nextTreatmentEv ? (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={`p-4 rounded-2xl border ${isSameDay(nextTreatmentEv.date, today) ? "bg-green-50" : "bg-gray-50"}`}>
@@ -651,60 +1036,59 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
         </CardContent>
       </Card>
 
+      {/* Progress donut */}
       <Card className="lg:col-span-1">
-        <CardContent className="p-6">
-          <h3 className="font-semibold mb-3">{t.quickActions}</h3>
-          <div className="flex flex-wrap gap-2">
-            <Dialog>
-              <DialogTrigger asChild><Button variant="outline"><Edit className="w-4 h-4 mr-2"/>{t.editPlan}</Button></DialogTrigger>
-              <DialogContent className="max-w-3xl"><DialogHeader><DialogTitle>{t.editPlan}</DialogTitle></DialogHeader><PlanEditor settings={settings} onSaved={refresh} /></DialogContent>
-            </Dialog>
-            <Dialog>
-              <DialogTrigger asChild><Button variant="outline"><MoveRight className="w-4 h-4 mr-2"/>{t.moveTreatment}</Button></DialogTrigger>
-              <DialogContent><DialogHeader><DialogTitle>{t.moveATreatment}</DialogTitle></DialogHeader><MoveTreatment settings={settings} moves={moves} onChanged={refresh} /></DialogContent>
-            </Dialog>
-          </div>
+        <CardContent className="cc-card-pad">
+          <h3 className="font-semibold mb-3">{t.courseProgress}</h3>
+          {settings?.cycles ? (() => {
+            const { done, total } = countCompletedTreatments(settings, moves);
+            const pct = Math.max(0, Math.min(1, total ? done / total : 0));
+            return (
+              <div className="flex items-center gap-4">
+                <DonutProgress pct={pct} />
+                <div>
+                  <div className="text-lg font-medium">{t.progressPct(Math.round(pct * 100))}</div>
+                  <div className="text-sm opacity-70">{done} / {total}</div>
+                  <div className="text-sm opacity-70">{done}/{total} {t.cyclesCompletedSuffix}</div>
+                </div>
+              </div>
+            );
+          })() : (
+            <p className="text-sm opacity-70">{t.setCyclesHint}</p>
+          )}
         </CardContent>
       </Card>
 
       <Card className="lg:col-span-3">
-        <CardContent className="p-6">
-          <h3 className="font-semibold mb-3">{t.upcoming}</h3>
+        <CardContent className="cc-card-pad">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold">{t.upcoming}</h3>
+            {/* NEW: Quick add appointment button */}
+            <QuickAddAppointment onAdded={refresh} />
+          </div>
           <div className="divide-y">
             {upcoming.map(ev => (
               <div key={ev.id} className={`py-2 flex items-center justify-between ${isSameDay(ev.date, today) ? "bg-blue-50 rounded-lg px-2" : ""}`}>
                 <div className="flex items-center gap-3">
-                  <span className={`text-xs px-2 py-1 rounded-full border ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"}`}>{ev.type === "treatment" ? t.treatment : t.action}</span>
+                  <span className={`text-xs px-2 py-1 rounded-full border ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"}`}>{labelFor(ev)}</span>
                   <div>
                     <div className={`font-medium ${ev.type === 'action' && (done as any)[ev.id] ? 'line-through opacity-60' : ''}`}>
                       {ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title}
                     </div>
                     <div className="text-xs opacity-70">
-                      {formatHuman(ev.date)}{ev.type === "action" && ev.rule?.time ? ` · ${formatTime(ev.date)}` : ""}{isSameDay(ev.date, today) ? ` · ${t.today}` : ""}
+                      {formatHuman(ev.date)}{hasTime(ev) ? ` · ${formatTime(ev.date)}` : ""}{isSameDay(ev.date, today) ? ` · ${t.today}` : ""}
                     </div>
                     {ev.type === 'action' && ev.rule?.notes ? <div className="text-xs opacity-70 mt-1 whitespace-pre-wrap">{ev.rule.notes}</div> : null}
+                    {ev.type === 'oneoff' && ev.item?.notes ? <div className="text-xs opacity-70 mt-1 whitespace-pre-wrap">{ev.item.notes}</div> : null}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                   {ev.type === 'action' && (
-                    <>
-                      {/* confetti on check */}
-                      <Checkbox
-                        checked={!!(done as any)[ev.id]}
-                        onClick={(e:any) => {
-                          if (!(done as any)[ev.id]) {
-                            fireConfettiAtClient(e.clientX, e.clientY);
-                          }
-                        }}
-                        onCheckedChange={(v)=>toggleDone(ev.id, !!v)}
-                      />
-                    </>
-                  )}
-                  {ev.type === "treatment" && (
-                    <Dialog>
-                      <DialogTrigger asChild><Button size="sm" variant="outline">{t.moveEllipsis}</Button></DialogTrigger>
-                      <DialogContent><DialogHeader><DialogTitle>{`${t.moveEllipsis.replace("…","")} ${t.treatment} #${ev.index + 1}`}</DialogTitle></DialogHeader><MoveTreatment preselectIndex={ev.index} settings={settings} moves={moves} onChanged={refresh} /></DialogContent>
-                    </Dialog>
+                    <Checkbox
+                      checked={!!(done as any)[ev.id]}
+                      onClick={(e:any) => { if (!(done as any)[ev.id]) { fireConfettiAtClient(e.clientX, e.clientY); } }}
+                      onCheckedChange={(v)=>toggleDone(ev.id, !!v)}
+                    />
                   )}
                 </div>
               </div>
@@ -712,78 +1096,6 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
           </div>
         </CardContent>
       </Card>
-    </div>
-  );
-}
-
-/*** Plan Editor ***/
-function PlanEditor({ settings, onSaved }: { settings: any; onSaved: () => void }) {
-  const { t } = useLocale();
-  const [vals, setVals] = useState(() => {
-    // migrate legacy offset -> day, and fix any Day 0
-    const v = structuredClone(settings);
-    v.medRules = (v.medRules || []).map((r: any) => {
-      const rawDay = (typeof r.day === "number") ? r.day : (typeof r.offset === "number" ? (r.offset >= 0 ? r.offset + 1 : r.offset) : 1);
-      return { time: "", ...r, day: normalizeDayInput(rawDay) };
-    });
-    return v;
-  });
-  const [dirty, setDirty] = useState(false);
-
-  const update = (patch: any) => { setVals((v: any) => ({ ...v, ...patch })); setDirty(true); };
-  const updateRule = (id: string, patch: any) => { setVals((v: any) => ({ ...v, medRules: v.medRules.map((r: any) => r.id === id ? { ...r, ...patch, day: normalizeDayInput(patch.day ?? r.day) } : r) })); setDirty(true); };
-  const addRule = () => update({ medRules: [...vals.medRules, { id: crypto.randomUUID(), day: 1, title: "Dag 1: actie", notes: "", time: "", enabled: true }] });
-  const deleteRule = (id: string) => update({ medRules: vals.medRules.filter((r: any) => r.id !== id) });
-  const duplicateRule = (rule: any) => update({ medRules: [...vals.medRules, { ...rule, id: crypto.randomUUID() }] });
-
-  return (
-    <div className="space-y-4">
-      <div className="grid md:grid-cols-3 gap-4">
-        <div><Label>{t.firstDate}</Label><Input type="date" value={vals.startDate} onChange={e => update({ startDate: e.target.value })} /></div>
-        <div><Label>{t.frequency}</Label><Input type="number" step={1} min={1} value={vals.frequencyDays} onChange={e => update({ frequencyDays: parseInt(e.target.value || "0", 10) })} /></div>
-        <div><Label>{t.cycles}</Label><Input type="number" step={1} min={1} value={vals.cycles ?? ""} onChange={e => update({ cycles: e.target.value === "" ? null : parseInt(e.target.value, 10) })} /></div>
-      </div>
-
-      <h4 className="font-medium">{t.medActions}</h4>
-      <p className="text-xs opacity-70">{t.sameDayHint}</p>
-
-      <div className="space-y-2">
-        {vals.medRules.map((rule: any) => (
-          <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
-            <div className="md:col-span-2">
-              <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
-              <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
-            </div>
-            <div className="md:col-span-2"><Label className="text-xs">{t.timeOfDay}</Label><Input type="time" value={rule.time || ""} onChange={e => updateRule(rule.id, { time: e.target.value })} /></div>
-            <div className="md:col-span-3"><Label className="text-xs">{t.title}</Label><Input value={rule.title} onChange={e => updateRule(rule.id, { title: e.target.value })} /></div>
-            <div className="md:col-span-4"><Label className="text-xs">{t.notes}</Label><Textarea rows={2} value={rule.notes || ""} onChange={e => updateRule(rule.id, { notes: e.target.value })} /></div>
-            <div className="cc-controls flex items-center gap-2">
-              <Checkbox checked={rule.enabled} onCheckedChange={v => updateRule(rule.id, { enabled: !!v })} />
-              <Button size="icon" variant="ghost" onClick={() => duplicateRule(rule)} title={STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].duplicateAction}><Copy className="w-4 h-4"/></Button>
-              <Button size="icon" variant="ghost" onClick={() => deleteRule(rule.id)}><Trash2 className="w-4 h-4"/></Button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex gap-2">
-        <Button variant="outline" onClick={() => addRule()}><Plus className="w-4 h-4 mr-2"/>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].addAction}</Button>
-        <div className="flex-1" />
-        <Button disabled={!dirty} onClick={async () => {
-          const oldSettings = await loadSettings();
-          const oldMoves = await loadMoves();
-          if (oldSettings) {
-            const series = buildAnchors(oldSettings.startDate, oldSettings.frequencyDays, oldMoves);
-            const cutoff = new Date();
-            const frozen = freezePastMoves(series, cutoff, oldSettings.cycles ?? null);
-            const merged = mergeMoves(oldMoves, frozen);
-            await saveMoves(merged);
-          }
-          await saveSettings({ ...vals, medRules: vals.medRules.map((r: any)=>({ ...r, day: normalizeDayInput(r.day) })) });
-          onSaved();
-        }}>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].savePlan}</Button>
-      </div>
-      <p className="text-xs opacity-70" dangerouslySetInnerHTML={{ __html: STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].editAffects }} />
     </div>
   );
 }
@@ -823,17 +1135,64 @@ function SharePanel() {
   const [events, setEvents] = useState<any[]>([]);
   const [ready, setReady] = useState(false);
 
+  const [code, setCode] = useState("");
+  const [calendarName, setCalendarName] = useState<string>("ChemoCare"); // NEW
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const copyCode = async () => {
+    try {
+      const settings = await loadSettings();
+      const bundle = { v:1, settings: { ...settings, calendarName: calendarName?.trim() || settings?.calendarName || "ChemoCare" }, moves: await loadMoves() };
+      const text = encodeShare(bundle);
+      await navigator.clipboard.writeText(text);
+      alert(t.copied);
+    } catch { alert(t.importFail); }
+  };
+  const loadFromCode = async () => {
+    try {
+      const bundle = decodeShare(code.trim());
+      if (!bundle?.settings) throw new Error("bad");
+      await saveSettings(bundle.settings);
+      await saveMoves(bundle.moves || []);
+      setCalendarName(bundle.settings.calendarName || "ChemoCare");
+      setEvents(buildEvents(bundle.settings, bundle.moves || [], { monthsAhead: 24 }));
+      alert(t.importSuccess);
+    } catch { alert(t.importFail); }
+  };
+  const downloadJson = async () => {
+    const s = await loadSettings();
+    const bundle = { v:1, settings: { ...s, calendarName: calendarName?.trim() || s?.calendarName || "ChemoCare" }, moves: await loadMoves() };
+    const blob = new Blob([JSON.stringify(bundle,null,2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const nameForFile = (bundle.settings.calendarName || "ChemoCare").replace(/[^a-z0-9-_]+/gi,"_");
+    a.href = url; a.download = `ChemoCare-share-${nameForFile}-${toISODate(new Date())}.json`;
+    document.body.appendChild(a); a.click(); safeRemove(a); URL.revokeObjectURL(url);
+  };
+  const uploadJson = async (file: File) => {
+    try {
+      const txt = await file.text();
+      const bundle = JSON.parse(txt);
+      await saveSettings(bundle.settings);
+      await saveMoves(bundle.moves||[]);
+      setCalendarName(bundle.settings.calendarName || "ChemoCare");
+      setEvents(buildEvents(bundle.settings, bundle.moves || [], { monthsAhead: 24 }));
+      alert(t.importSuccess);
+    } catch { alert(t.importFail); }
+  };
+
   useEffect(() => { (async () => {
     const s = await loadSettings();
-    const mv = await loadMoves();
-    // Migration on load: convert legacy offset->day and fix 0
     if (s && Array.isArray(s.medRules)) {
       s.medRules = s.medRules.map((r: any) => {
         const rawDay = (typeof r.day === "number") ? r.day : (typeof r.offset === "number" ? (r.offset >= 0 ? r.offset + 1 : r.offset) : 1);
         return { ...r, day: normalizeDayInput(rawDay) };
       });
+      s.oneOffs = Array.isArray(s.oneOffs) ? s.oneOffs : [];
     }
+    const mv = await loadMoves();
     const evs = buildEvents(s, mv, { monthsAhead: 24 });
+    setCalendarName(s?.calendarName || "ChemoCare");
     setEvents(evs); setReady(true);
   })(); }, []);
 
@@ -841,15 +1200,42 @@ function SharePanel() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm opacity-80" dangerouslySetInnerHTML={{ __html: t.shareBody }} />
-      <div className="flex gap-2">
-        <Button onClick={() => {
-          const ics = generateICS(events, { calendarName: "ChemoCare" });
-          downloadICS(ics, `ChemoCare-${toISODate(new Date())}.ics`);
-        }}>
-          <Download className="w-4 h-4 mr-2"/>{t.exportICS}
-        </Button>
+      <div className="grid md:grid-cols-2 gap-3">
+        <div>
+          <p className="text-sm opacity-80" dangerouslySetInnerHTML={{ __html: t.shareBody }} />
+          <div className="mt-2">
+            <Label className="text-xs">{t.calendarNameLabel}</Label>
+            <Input value={calendarName} onChange={(e)=>setCalendarName(e.target.value)} />
+          </div>
+          <div className="flex gap-2 mt-3">
+            <Button onClick={() => {
+              const ics = generateICS(events, { calendarName: calendarName?.trim() || "ChemoCare" });
+              const safeName = (calendarName?.trim() || "ChemoCare").replace(/[^a-z0-9-_]+/gi,"_");
+              downloadICS(ics, `ChemoCare-${safeName}-${toISODate(new Date())}.ics`);
+            }}>
+              <Download className="w-4 h-4 mr-2"/>{t.exportICS}
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <h4 className="font-medium">{t.shareInApp}</h4>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={copyCode}>{t.copyShareCode}</Button>
+            <Button variant="outline" onClick={downloadJson}>{t.downloadFile}</Button>
+            <Button variant="outline" onClick={()=>document.getElementById("share-file-input")?.click()}><Upload className="w-4 h-4 mr-2" />{t.uploadFile}</Button>
+            <input id="share-file-input" type="file" accept="application/json" className="hidden" onChange={e=>{ const f=(e.target as HTMLInputElement).files?.[0]; if (f) uploadJson(f); }} />
+          </div>
+          <div className="mt-2">
+            <Label className="text-xs">{t.pasteShareCode}</Label>
+            <Textarea rows={3} value={code} onChange={e=>setCode(e.target.value)} />
+            <div className="mt-2">
+              <Button onClick={loadFromCode}>{t.load}</Button>
+            </div>
+          </div>
+        </div>
       </div>
+
       <details className="rounded-lg border p-3">
         <summary className="cursor-pointer font-medium">{t.howToImport}</summary>
         <ul className="list-disc ml-6 text-sm mt-2 space-y-1" dangerouslySetInnerHTML={{ __html: STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].outlookDesktop + STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].outlookWeb + STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].googleCal + STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].appleCal }} />
@@ -860,12 +1246,12 @@ function SharePanel() {
 }
 
 /*** Month Calendar ***/
-function MonthCalendar({ events, onMoveTreatment }: { events: any[]; onMoveTreatment: (ev: any) => void }) {
+function MonthCalendar({ events }: { events: any[]; }) {
   const { t } = useLocale();
   const [cursor, setCursor] = useState(new Date());
   const startOfMonth = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
   const startDay = startOfMonth.getDay();
-  const gridStart = addDays(startOfMonth, -((startDay + 6) % 7)); // Monday start
+  const gridStart = addDays(startOfMonth, -((startDay + 6) % 7));
   const days = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
 
   const eventsByDay = useMemo(() => {
@@ -900,9 +1286,10 @@ function MonthCalendar({ events, onMoveTreatment }: { events: any[]; onMoveTreat
                 {evs.map((ev: any) => (
                   <div key={ev.id} className={`text-[11px] px-2 py-1 rounded-full ${ev.type === "treatment" ? "bg-green-100" : "bg-yellow-100"} flex items-center justify-between gap-1`}>
                     <span className="truncate">
-                      {ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : `${ev.title}${ev.rule?.time ? ` · ${formatTime(ev.date)}` : ""}`}
+                      {ev.type === 'treatment'
+                        ? `${t.treatment} #${ev.index + 1}`
+                        : `${ev.title}${((ev.type === "action" && ev.rule?.time) || (ev.type === "oneoff" && ev.item?.time)) ? ` · ${formatTime(ev.date)}` : ""}`}
                     </span>
-                    {ev.type === "treatment" && <button className="text-[10px] underline" onClick={() => onMoveTreatment(ev)}>{t.moveEllipsis}</button>}
                   </div>
                 ))}
               </div>
@@ -914,116 +1301,297 @@ function MonthCalendar({ events, onMoveTreatment }: { events: any[]; onMoveTreat
   );
 }
 
+/*** Plan Editor (Edit Schedule) ***/
+function PlanEditor({ settings, onSaved }: { settings: any; onSaved: () => void }) {
+  const { t } = useLocale();
+  const [vals, setVals] = useState(() => {
+    const v = structuredClone(settings);
+    v.medRules = (v.medRules || []).map((r: any) => {
+      const rawDay = (typeof r.day === "number") ? r.day : (typeof r.offset === "number" ? (r.offset >= 0 ? r.offset + 1 : r.offset) : 1);
+      return { time: "", ...r, day: normalizeDayInput(rawDay) };
+    });
+    v.oneOffs = Array.isArray(v.oneOffs) ? v.oneOffs : [];
+    v.calendarName = v.calendarName || "ChemoCare";
+    return v;
+  });
+  const [dirty, setDirty] = useState(false);
+  const [savedFlag, setSavedFlag] = useState(false);
+
+  const update = (patch: any) => { setVals((v: any) => ({ ...v, ...patch })); setDirty(true); };
+  const updateRule = (id: string, patch: any) => { setVals((v: any) => ({ ...v, medRules: v.medRules.map((r: any) => r.id === id ? { ...r, ...patch, day: normalizeDayInput(patch.day ?? r.day) } : r) })); setDirty(true); };
+  const addRule = () => update({ medRules: [...vals.medRules, { id: crypto.randomUUID(), day: 1, title: "Day 1: action", notes: "", time: "", enabled: true }] });
+  const deleteRule = (id: string) => update({ medRules: vals.medRules.filter((r: any) => r.id !== id) });
+  const duplicateRule = (rule: any) => update({ medRules: [...vals.medRules, { ...rule, id: crypto.randomUUID() }] });
+
+  const addOneOff = (kind: "appointment" | "med") =>
+    update({ oneOffs: [...(vals.oneOffs || []), { id: crypto.randomUUID(), dateISO: "", time: "", title: "", notes: "", kind }] });
+  const updateOneOff = (id: string, patch: any) =>
+    update({ oneOffs: (vals.oneOffs || []).map((o:any)=>o.id===id?{...o, ...patch}:o) });
+  const deleteOneOff = (id: string) =>
+    update({ oneOffs: (vals.oneOffs || []).filter((o:any)=>o.id!==id) });
+
+  const showSaved = () => { setSavedFlag(true); setTimeout(()=>setSavedFlag(false), 2200); };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid md:grid-cols-3 gap-4">
+        <div><Label>{t.firstDate}</Label><Input type="date" value={vals.startDate} onChange={e => update({ startDate: e.target.value })} /></div>
+        <div><Label>{t.frequency}</Label><Input type="number" step={1} min={1} value={vals.frequencyDays} onChange={e => update({ frequencyDays: parseInt(e.target.value || "0", 10) })} /></div>
+        <div><Label>{t.cycles}</Label><Input type="number" step={1} min={1} value={vals.cycles ?? ""} onChange={e => update({ cycles: e.target.value === "" ? null : parseInt(e.target.value, 10) })} /></div>
+      </div>
+
+      <div>
+        <Label>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].calendarNameLabel}</Label>
+        <Input value={vals.calendarName} onChange={(e)=>update({ calendarName: e.target.value })} />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div>
+          <h4 className="font-medium">{t.medActions}</h4>
+          <p className="text-xs opacity-70">{t.medActionsHelp}</p>
+        </div>
+        {/* FIX: Add Action button placed with actions (not near one-offs) */}
+        <Button variant="outline" onClick={() => addRule()}><Plus className="w-4 h-4 mr-2"/>{t.addAction}</Button>
+      </div>
+
+      <div className="space-y-2">
+        {vals.medRules.map((rule: any) => (
+          <div key={rule.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+            <div>
+              <div className="flex items-center gap-1"><Label className="text-xs">{t.dayField}</Label><DayInfo t={t} /></div>
+              <DayInput value={rule.day} onChange={(n)=>updateRule(rule.id, { day: n })} />
+            </div>
+            <div><Label className="text-xs">{t.timeOfDay}</Label><Input type="time" value={rule.time || ""} onChange={e => updateRule(rule.id, { time: e.target.value })} /></div>
+            <div><Label className="text-xs">{t.title}</Label><Input value={rule.title} onChange={e => updateRule(rule.id, { title: e.target.value })} /></div>
+            <div><Label className="text-xs">{t.notes}</Label><Textarea rows={2} value={rule.notes || ""} onChange={e => updateRule(rule.id, { notes: e.target.value })} /></div>
+            <div className="cc-controls flex items-center gap-2">
+              <Checkbox checked={rule.enabled} onCheckedChange={v => updateRule(rule.id, { enabled: !!v })} />
+              <Button size="icon" variant="ghost" onClick={() => duplicateRule(rule)} title={t.duplicateAction}><Copy className="w-4 h-4"/></Button>
+              <Button size="icon" variant="ghost" onClick={() => deleteRule(rule.id)}><Trash2 className="w-4 h-4"/></Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <h4 className="font-medium mt-6">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].oneOffsTitle}</h4>
+      <p className="text-xs opacity-70">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].oneOffsHelp}</p>
+      <div className="space-y-2">
+        {(vals.oneOffs || []).map((o:any) => (
+          <div key={o.id} className="cc-rule-row p-3 rounded-xl border bg-white">
+            <div>
+              <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].date}</Label>
+              <Input type="date" value={o.dateISO} onChange={e=>updateOneOff(o.id,{dateISO:e.target.value})}/>
+            </div>
+            <div>
+              <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].timeOfDay}</Label>
+              <Input type="time" value={o.time||""} onChange={e=>updateOneOff(o.id,{time:e.target.value})}/>
+            </div>
+            <div>
+              <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].title}</Label>
+              <Input value={o.title} onChange={e=>updateOneOff(o.id,{title:e.target.value})}/>
+            </div>
+            <div>
+              <Label className="text-xs">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].notes}</Label>
+              <Textarea rows={2} value={o.notes||""} onChange={e=>updateOneOff(o.id,{notes:e.target.value})}/>
+            </div>
+            <div className="cc-controls flex items-center gap-2">
+              <Select value={o.kind} onValueChange={(v)=>updateOneOff(o.id,{kind:v})}>
+                <SelectTrigger className="w-[120px]"><SelectValue placeholder={STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].type}/></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="appointment">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].appointment}</SelectItem>
+                  <SelectItem value="med">{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].medication}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button size="icon" variant="ghost" onClick={()=>deleteOneOff(o.id)}><Trash2 className="w-4 h-4"/></Button>
+            </div>
+          </div>
+        ))}
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={()=>addOneOff("appointment")}><Plus className="w-4 h-4 mr-2"/>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].addAppointment}</Button>
+          <Button variant="outline" onClick={()=>addOneOff("med")}><Plus className="w-4 h-4 mr-2"/>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].addMedication}</Button>
+        </div>
+      </div>
+
+      <div className="flex">
+        <div className="flex-1" />
+        <Button disabled={!dirty} onClick={async () => {
+          const oldSettings = await loadSettings();
+          const oldMoves = await loadMoves();
+          if (oldSettings) {
+            const series = buildAnchors(oldSettings.startDate, oldSettings.frequencyDays, oldMoves);
+            const cutoff = new Date();
+            const frozen = freezePastMoves(series, cutoff, oldSettings.cycles ?? null);
+            const merged = mergeMoves(oldMoves, frozen);
+            await saveMoves(merged);
+          }
+          await saveSettings({ ...vals, medRules: vals.medRules.map((r: any)=>({ ...r, day: normalizeDayInput(r.day) })), oneOffs: vals.oneOffs || [] });
+          onSaved();
+          showSaved();
+          setDirty(false);
+        }}>{STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].savePlan}</Button>
+      </div>
+
+      {savedFlag && (
+        <div className="cc-toast">
+          <div className="px-3 py-2 rounded-lg border bg-green-50 text-green-800 border-green-200 shadow-sm">{t.saved}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/******************** DOM runtime guards ********************/
+function installDomGuardsOnce(){
+  if ((window as any).__CHEMOCARE_DOM_GUARDS__) return;
+  (window as any).__CHEMOCARE_DOM_GUARDS__ = true;
+  try {
+    const origRemoveChild = Node.prototype.removeChild;
+    // @ts-ignore
+    Node.prototype.removeChild = function(child: any){
+      try { return origRemoveChild.call(this, child); }
+      catch (e:any) {
+        if (e && (e.name === "NotFoundError" || String(e).includes("NotFoundError"))) {
+          // ignore benign double-removals
+          return child;
+        }
+        throw e;
+      }
+    };
+  } catch {}
+  try {
+    const origRemove = (Element.prototype as any).remove;
+    if (origRemove) {
+      // @ts-ignore
+      Element.prototype.remove = function(){
+        try { return origRemove.call(this); }
+        catch (e:any) {
+          if (e && (e.name === "NotFoundError" || String(e).includes("NotFoundError"))) return;
+          throw e;
+        }
+      };
+    }
+  } catch {}
+}
+
 /*** App ***/
+installDomGuardsOnce();
+type AppMode = 'loading' | 'wizard' | 'main';
 function App() {
   const { t } = useLocale();
   const [loaded, setLoaded] = useState(false);
+  const [mode, setMode] = useState<AppMode>('loading');
   const [settings, setSettings] = useState<any>(null);
   const [moves, setMoves] = useState<any[]>([]);
 
   const refresh = async () => {
     const s = await loadSettings();
-    // MIGRATION: legacy offset -> day, and enforce Day 1 (no Day 0)
     if (s && Array.isArray(s.medRules)) {
       s.medRules = s.medRules.map((r: any) => {
         const rawDay = (typeof r.day === "number") ? r.day
-          : (typeof r.offset === "number" ? (r.offset >= 0 ? r.offset + 1 : r.offset) : 1);
+          : (typeof r.offset === "number") ? (r.offset >= 0 ? r.offset + 1 : r.offset) : 1;
         return { ...r, day: normalizeDayInput(rawDay) };
       });
+      s.oneOffs = Array.isArray(s.oneOffs) ? s.oneOffs : [];
+      s.calendarName = s.calendarName || "ChemoCare";
     }
     const mv = await loadMoves();
     setSettings(s);
     setMoves(mv);
     setLoaded(true);
+    setMode(s ? 'main' : 'wizard');
   };
 
   useEffect(() => { refresh(); }, []);
-  if (!loaded) return <div className="p-6">Loading…</div>;
-
-  if (!settings) {
-    return (
-      <div className="max-w-5xl mx-auto p-4 min-h-screen bg-gray-50 text-gray-900">
+  if (!loaded) return (
+    <div className="cc-app-shell">
+      <div className="cc-container">
         <Header onReset={async () => { await saveSettings(null); await saveMoves([]); refresh(); }} />
-        <SetupWizard onComplete={() => refresh()} />
+        <GlobalStyles />
+        <Card><CardContent className="cc-card-pad">Loading…</CardContent></Card>
       </div>
+    </div>
+  );
+
+  if (mode === 'wizard') {
+    return (
+      <FirstLaunchWizard
+        onDone={() => refresh()}
+        onReset={async () => { await saveSettings(null); await saveMoves([]); refresh(); }}
+      />
     );
   }
 
   const events = buildEvents(settings, moves, { monthsAhead: 18 });
 
   return (
-    <div className="max-w-6xl mx-auto p-4 space-y-4 min-h-screen bg-gray-50 text-gray-900">
-      <Header onReset={async () => { await saveSettings(null); await saveMoves([]); refresh(); }} />
-      <Tabs defaultValue="home">
-        <TabsList className="flex flex-wrap">
-          <TabsTrigger value="home">{t.tabs.home}</TabsTrigger>
-          <TabsTrigger value="calendar">{t.tabs.calendar}</TabsTrigger>
-          <TabsTrigger value="plan">{t.tabs.plan}</TabsTrigger>
-          <TabsTrigger value="share">{t.tabs.share}</TabsTrigger>
-        </TabsList>
-        <TabsContent value="home"><Home settings={settings} moves={moves} refresh={refresh} /></TabsContent>
-        <TabsContent value="calendar">
-          <MonthCalendar
-            events={events}
-            onMoveTreatment={(ev) => {
-              const dlg = document.getElementById("moveTreatmentDialogBtn");
-              if (dlg) (dlg as HTMLButtonElement).click();
-              setTimeout(() => setMoveContext(ev), 0);
-            }}
-          />
-          <Dialog>
-            <DialogTrigger asChild><button id="moveTreatmentDialogBtn" style={{ display: "none" }} /></DialogTrigger>
-            <DialogContent><DialogHeader><DialogTitle>{`${STRINGS[(localStorage.getItem("locale") as LocaleKey) || "nl"].moveEllipsis.replace("…", "")} ${t.treatment}`}</DialogTitle></DialogHeader><MoveTreatment preselectIndex={moveContext?.index || 0} settings={settings} moves={moves} onChanged={refresh} /></DialogContent>
-          </Dialog>
-        </TabsContent>
-        <TabsContent value="plan"><PlanEditor settings={settings} onSaved={refresh} /></TabsContent>
-        <TabsContent value="share"><SharePanel /></TabsContent>
-      </Tabs>
+    <div className="cc-app-shell">
+      <div className="cc-container">
+        <Header onReset={async () => { await saveSettings(null); await saveMoves([]); refresh(); }} />
+        <GlobalStyles />
+        <div className="space-y-4">
+          <div className="cc-tabs">
+            <Tabs defaultValue="home" className="w-full">
+              <TabsList className="flex flex-wrap">
+                <TabsTrigger value="home">{t.tabs.home}</TabsTrigger>
+                <TabsTrigger value="calendar">{t.tabs.calendar}</TabsTrigger>
+                <TabsTrigger value="plan">{t.tabs.plan}</TabsTrigger>
+                <TabsTrigger value="share">{t.tabs.share}</TabsTrigger>
+              </TabsList>
+              <TabsContent value="home"><motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}><Home settings={settings} moves={moves} refresh={refresh} /></motion.div></TabsContent>
+              <TabsContent value="calendar"><motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}>
+                {/* NEW: Toolbar with quick add */}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-lg font-semibold">{t.tabs.calendar}</div>
+                  <QuickAddAppointment onAdded={refresh} />
+                </div>
+                <MonthCalendar events={events} />
+                {/* Move treatment handled via Home dialog or future enhancement */}
+              </motion.div></TabsContent>
+              <TabsContent value="plan"><motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}><Card><CardContent className="cc-card-pad"><PlanEditor settings={settings} onSaved={refresh} /></CardContent></Card></motion.div></TabsContent>
+              <TabsContent value="share"><motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} transition={{duration:.2}}><Card><CardContent className="cc-card-pad"><SharePanel /></CardContent></Card></motion.div></TabsContent>
+            </Tabs>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-// local state holder for calendar dialog
-let moveContext: any = null;
-function setMoveContext(ev: any) { moveContext = ev; }
+
+
+/*** Error Boundary ***/
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; err?: any }> {
+  constructor(props:any){ super(props); this.state = { hasError: false, err: null }; }
+  static getDerivedStateFromError(error:any){ return { hasError: true, err: error }; }
+  componentDidCatch(error:any, info:any){ console.error("ErrorBoundary caught:", error, info); }
+  render(){
+    if(this.state.hasError){
+      return (
+        <div className="p-4 rounded-xl border bg-red-50 text-red-900">
+          <div className="font-semibold mb-1">Something went wrong.</div>
+          <pre className="text-xs whitespace-pre-wrap">{String(this.state.err)}</pre>
+        </div>
+      );
+    }
+    return this.props.children as any;
+  }
+}
+
+
+// Safe mount (guard against calling createRoot twice on the same container)
+declare global { interface Window { __CHEMOCARE_ROOT__?: any; } }
+if (typeof document !== "undefined") {
+  const el = document.getElementById("root");
+  if (el) {
+    try {
+      const root = (window as any).__CHEMOCARE_ROOT__ ?? createRoot(el);
+      (window as any).__CHEMOCARE_ROOT__ = root;
+      root.render(<ErrorBoundary><App /></ErrorBoundary>);
+    } catch (e) {
+      console.error("Mount error:", e);
+    }
+  }
+}
 
 export default App;
-
-/******************** Lightweight runtime tests ********************/
-function assertEq(name: string, a: any, b: any) { if (JSON.stringify(a)!==JSON.stringify(b)) { console.warn(`❌ ${name} failed`,{a,b}); } else { console.log(`✅ ${name} passed`); } }
-function runLightTests() {
-  try {
-    const start = "2025-01-01";
-    const s = buildAnchors(start, 14, []);
-    assertEq("T1", toISODate(computeTreatmentDate(s, 0)), "2025-01-01");
-    assertEq("T2", toISODate(computeTreatmentDate(s, 1)), "2025-01-15");
-
-    // Day mapping checks (no Day 0)
-    assertEq("Day 1 -> offset 0", dayToOffset(1), 0);
-    assertEq("Day 2 -> offset +1", dayToOffset(2), 1);
-    assertEq("Day -1 -> offset -1", dayToOffset(-1), -1);
-    assertEq("Normalize 0 -> 1", normalizeDayInput(0), 1);
-
-    const settings = {
-      startDate: start,
-      frequencyDays: 14,
-      cycles: 6,
-      medRules: [
-        { id: "pre", day: -1, title: "Premed", enabled: true, time: "" },  // day before
-        { id: "post", day: 2, title: "Post-med", enabled: true, time: "09:00" }, // day after
-      ],
-    };
-    const evs = buildEvents(settings, [], { monthsAhead: 2 });
-    const firstTreatment = evs.find((e: any) => e.id === "treat-0");
-    const pre = evs.find((e: any) => e.id === "act-0-pre");
-    const post = evs.find((e: any) => e.id === "act-0-post");
-    assertEq("Treatment Day 1", toISODate(firstTreatment.date), "2025-01-01");
-    assertEq("Day -1", toISODate(pre.date), "2024-12-31");
-    assertEq("Day 2", toISODate(post.date), "2025-01-02");
-  } catch (err) { console.warn("Tests error", err); }
-}
-if (typeof window !== "undefined") { try { runLightTests(); } catch {} }
-if (typeof document !== "undefined" && document.getElementById("root")) {
-  const root = createRoot(document.getElementById("root")!);
-  root.render(<App />);
-}
