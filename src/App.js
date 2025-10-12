@@ -650,6 +650,45 @@ function GlobalStyles() {
         align-items: center;           /* vertical alignment */
       }
 
+      /* ——— Tabs menu styling ——— */
+.cc-tabs [role="tab"] {
+  font-size: 0.95rem;                    /* slightly larger text */
+  font-weight: 500;
+  position: relative;
+  padding-bottom: 6px;                   /* make room for underline */
+  transition: color 0.2s ease;
+}
+
+.cc-tabs [role="tab"][data-state="active"] {
+  color: #0f172a;                        /* active color */
+}
+
+/* modern gradient underline for active tab */
+.cc-tabs [role="tab"][data-state="active"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #3b82f6, #ec4899, #f97316);
+  background-size: 200% 100%;
+  animation: cc-underline-move 3s ease infinite;
+}
+
+/* optional: subtle hover effect for inactive tabs */
+.cc-tabs [role="tab"]:hover {
+  color: #334155;
+}
+
+/* gradient animation */
+@keyframes cc-underline-move {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
 
       /* Neomorphic cards */
       .cc-card-pad { padding: 24px; }
