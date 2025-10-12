@@ -1348,7 +1348,7 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
                     {/* ORDER: Days to go → Date → Title → Notes */}
                     <div className="text-sm font-semibold">{daysToGoText(ev.date)}</div>
                     <div className="text-xs opacity-70">{formatHuman(ev.date)}{hasTime(ev) ? ` · ${formatTime(ev.date)}` : ""}{isSameDay(ev.date, today) ? ` · ${t.today}` : ""}</div>
-                    <div className={`mt-1 font-medium ${ev.type === 'action' && (done as any)[ev.id] ? 'line-through opacity-60' : ''}`}>
+                    <div className={`mt-1 font-medium ${ (done as any)[ev.id] ? 'line-through opacity-60' : '' }`}>
                       {ev.type === 'treatment' ? `${t.treatment} #${ev.index + 1}` : ev.title}
                     </div>
                     {ev.type === 'action' && ev.rule?.notes ? <div className="text-xs opacity-70 mt-1 whitespace-pre-wrap">{ev.rule.notes}</div> : null}
@@ -1356,13 +1356,14 @@ function Home({ settings, moves, refresh }: { settings: any; moves: any[]; refre
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {ev.type === 'action' && (
-                    <Checkbox
-                      checked={!!(done as any)[ev.id]}
-                      onClick={(e:any) => { if (!(done as any)[ev.id]) { fireConfettiAtClient(e.clientX, e.clientY); } }}
-                      onCheckedChange={(v)=>toggleDone(ev.id, !!v)}
-                    />
-                  )}
+                  <Checkbox
+                    checked={!!(done as any)[ev.id]}
+                    aria-label={`Mark ${labelFor(ev)} as done`}
+                    onClick={(e:any) => {
+                      if (!(done as any)[ev.id]) { fireConfettiAtClient(e.clientX, e.clientY); }
+                    }}
+                    onCheckedChange={(v)=>toggleDone(ev.id, !!v)}
+                  />
                 </div>
               </div>
             ))}
